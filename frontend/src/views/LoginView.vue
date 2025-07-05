@@ -23,17 +23,21 @@ import { useAuthStore } from '@/stores/auth';
 
 const authStore = useAuthStore();
 const message = useMessage();
-const username = ref('demo');
-const password = ref('demo');
+const username = ref('admin'); // 后端硬编码的用户名
+const password = ref('password'); // 后端硬编码的密码
 const loading = ref(false);
 
 const handleLogin = async () => {
+  if (!username.value || !password.value) {
+    message.error("请输入用户名和密码");
+    return;
+  }
   loading.value = true;
   try {
     await authStore.login({ username: username.value, password: password.value });
-    message.success('登录成功');
+    // 登录成功后会自动跳转，不需要在这里 message.success
   } catch (error) {
-    message.error('登录失败，请重试');
+    message.error('登录失败：用户名或密码错误');
   } finally {
     loading.value = false;
   }

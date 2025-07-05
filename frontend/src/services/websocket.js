@@ -2,6 +2,8 @@ import { useDashboardStore } from '@/stores/dashboard'
 
 let socket = null
 
+const WS_URL = 'ws://localhost:8000/api/v1/ws/data';
+
 export function connectWebSocket(onOpen, onClose, onError) {
   const dashboardStore = useDashboardStore()
   
@@ -10,7 +12,7 @@ export function connectWebSocket(onOpen, onClose, onError) {
     return;
   }
   
-  socket = new WebSocket('ws://localhost:8000/ws/data')
+  socket = new WebSocket(WS_URL)
 
   socket.onopen = () => {
     console.log('WebSocket Connected')

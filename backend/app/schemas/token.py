@@ -8,4 +8,5 @@ class Token(BaseModel):
     token_type: str
 
 class TokenPayload(BaseModel):
-    sub: Optional[int] = None
+    exp: Optional[int] = None
+    sub: Optional[str] = None

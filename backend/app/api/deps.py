@@ -28,27 +28,28 @@ def get_db() -> Generator:
 def get_current_user(
     db: Session = Depends(get_db), token: str = Depends(reusable_oauth2)
 ):
-    """
-    解码token以获取当前用户。
-    这是一个简化的版本，没有从数据库查询用户。
-    """
     try:
+        # 确保这里解码时，使用的也是从 config 导入的 KEY 和 ALGORITHM
         payload = jwt.decode(
             token, config.SECRET_KEY, algorithms=[config.ALGORITHM]
         )
+        # 检查 subject 是否存在
+        if payload.get("sub") is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Could not validate credentials (subject missing)",
+            )
         token_data = TokenPayload(**payload)
-    except (JWTError, ValidationError):
+    except JWTError as e: # 捕获具体的JWTError可以提供更多信息
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Could not validate credentials",
+            detail=f"Could not validate credentials ({str(e)})",
+        )
+    except ValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate credentials (payload validation failed)",
         )
     
-    # 简化：我们不从数据库查用户，只要token有效就认为用户存在。
-    # 在真实应用中，你会用 token_data.sub (用户ID) 从数据库查询用户。
-    # user = crud.user.get(db, id=token_data.sub)
-    # if not user:
-    #     raise HTTPException(status_code=404, detail="User not found")
-    # return user
-
-    # 返回一个模拟的用户对象
+    # 简化版：直接返回解码后的用户信息
     return {"username": token_data.sub}

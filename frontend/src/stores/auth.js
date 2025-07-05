@@ -1,46 +1,63 @@
+// frontend/src/stores/auth.js
+
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import router from '@/router'
 import api from '@/services/api'
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem('token'))
-  const user = ref(null)
+  const token = ref(null); // 初始化为 null
+  const user = ref(null);
 
-  const isAuthenticated = computed(() => !!token.value)
+  const isAuthenticated = computed(() => !!token.value);
 
   function setToken(newToken) {
-    token.value = newToken
-    localStorage.setItem('token', newToken)
-    api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
+    token.value = newToken;
+    if (newToken) {
+      localStorage.setItem('token', newToken);
+      api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
+    } else {
+      localStorage.removeItem('token');
+      delete api.defaults.headers.common['Authorization'];
+    }
   }
 
   async function login(credentials) {
+    // ... login 函数保持不变 ...
     try {
-      // 后端API简化了，这里直接模拟成功
-      // const { data } = await api.post('/login/access-token', new URLSearchParams(credentials));
-      // setToken(data.access_token);
-      setToken("fake-jwt-token-for-demo") // 模拟Token
-      router.push({ name: 'dashboard' })
+      const formData = new URLSearchParams();
+      formData.append('username', credentials.username);
+      formData.append('password', credentials.password);
+      
+      const { data } = await api.post('/login/access-token', formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      });
+      
+      setToken(data.access_token);
+      router.push({ name: 'dashboard' });
     } catch (error) {
-      console.error('Login failed:', error)
-      throw error
+      console.error('Login failed:', error);
+      logout(); 
+      throw error;
     }
   }
 
   function logout() {
-    token.value = null
-    user.value = null
-    localStorage.removeItem('token')
-    delete api.defaults.headers.common['Authorization']
-    router.push({ name: 'login' })
-  }
-  
-  // 页面加载时初始化
-  const storedToken = localStorage.getItem('token')
-  if (storedToken) {
-    setToken(storedToken)
+    setToken(null);
+    user.value = null;
+    router.push({ name: 'login' });
   }
 
-  return { token, user, isAuthenticated, login, logout }
+  function checkAuthOnLoad() {
+    const storedToken = localStorage.getItem('token');
+    if (storedToken) {
+      setToken(storedToken);
+    }
+  }
+  
+  // 不再在这里自动调用 checkAuthOnLoad()
+
+  return { token, user, isAuthenticated, login, logout, checkAuthOnLoad }; // 导出 checkAuthOnLoad
 })
