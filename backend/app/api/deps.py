@@ -1,5 +1,5 @@
 # backend/app/api/deps.py
-
+import asyncio
 from typing import Generator
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -53,3 +53,5 @@ def get_current_user(
     
     # 简化版：直接返回解码后的用户信息
     return {"username": token_data.sub}
+
+
