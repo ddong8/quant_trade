@@ -11,10 +11,10 @@ STRATEGIES_DIR.mkdir(exist_ok=True) # Ensure the directory exists
 def get_strategy(db: Session, strategy_id: int):
     return db.query(Strategy).filter(Strategy.id == strategy_id).first()
 
-def get_strategies(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(Strategy).offset(skip).limit(limit).all()
+def get_strategies(db: Session, owner: str, skip: int = 0, limit: int = 100):
+    return db.query(Strategy).filter(Strategy.owner == owner).offset(skip).limit(limit).all()
 
-def create_strategy(db: Session, strategy: StrategyCreate):
+def create_strategy(db: Session, strategy: StrategyCreate, owner: str):
     # Generate a unique filename for the script
     script_filename = f"strategy_{uuid.uuid4()}.py"
     script_path = STRATEGIES_DIR / script_filename
@@ -27,7 +27,8 @@ def create_strategy(db: Session, strategy: StrategyCreate):
     db_strategy = Strategy(
         name=strategy.name,
         description=strategy.description,
-        script_path=str(script_path) # Store the path as a string
+        script_path=str(script_path), # Store the path as a string
+        owner=owner
     )
     db.add(db_strategy)
     db.commit()

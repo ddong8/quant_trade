@@ -15,11 +15,13 @@
     "naive-ui": "^2.42.0",
     "pinia": "^3.0.3",
     "vfonts": "^0.0.3",
+    "vite-plugin-monaco-editor": "^1.1.0",
     "vue": "^3.5.17",
     "vue-router": "^4.5.1"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.0",
+    "monaco-editor": "^0.52.2",
     "vite": "^7.0.0"
   }
 }

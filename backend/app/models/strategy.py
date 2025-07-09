@@ -10,3 +10,4 @@ class Strategy(Base):
     script_path = Column(String) # 假设策略代码在文件中
     status = Column(String, default="stopped") # "running", "stopped", "error"
     is_active = Column(Boolean(), default=True)
+    owner = Column(String, index=True)

@@ -25,6 +25,8 @@ export function connectWebSocket(onOpen, onClose, onError) {
       dashboardStore.addPnlData(message.data)
     } else if (message.type === 'log') {
       dashboardStore.addLog(message.data)
+    } else if (message.type === 'backtest_result') {
+      dashboardStore.setBacktestResult(message.data)
     }
   }
 

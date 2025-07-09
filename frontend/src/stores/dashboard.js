@@ -4,6 +4,7 @@ import { ref } from 'vue'
 export const useDashboardStore = defineStore('dashboard', () => {
   const pnlHistory = ref([])
   const logs = ref([])
+  const backtestResult = ref(null)
 
   function addPnlData(data) {
     // 保持最多100个数据点
@@ -21,11 +22,16 @@ export const useDashboardStore = defineStore('dashboard', () => {
     const timestamp = new Date().toLocaleTimeString()
     logs.value.unshift(`[${timestamp}] [Strategy ${log.strategy_id}] ${log.message}`)
   }
+
+  function setBacktestResult(result) {
+    backtestResult.value = result
+  }
   
   function clearData() {
     pnlHistory.value = []
     logs.value = []
+    backtestResult.value = null
   }
 
-  return { pnlHistory, logs, addPnlData, addLog, clearData }
+  return { pnlHistory, logs, backtestResult, addPnlData, addLog, setBacktestResult, clearData }
 })

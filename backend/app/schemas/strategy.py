@@ -24,6 +24,7 @@ class StrategyInDB(StrategyBase):
     id: int
     status: str
     is_active: bool
+    owner: str
 
     class Config:
         from_attributes = True
