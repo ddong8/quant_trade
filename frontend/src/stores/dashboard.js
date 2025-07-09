@@ -5,6 +5,8 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const pnlHistory = ref([])
   const logs = ref([])
   const backtestResult = ref(null)
+  const accountEquity = ref(null)
+  const orderEvents = ref([])
 
   function addPnlData(data) {
     // 保持最多100个数据点
@@ -26,12 +28,22 @@ export const useDashboardStore = defineStore('dashboard', () => {
   function setBacktestResult(result) {
     backtestResult.value = result
   }
+
+  function setAccountEquity(equity) {
+    accountEquity.value = equity
+  }
+
+  function addOrderEvent(event) {
+    orderEvents.value.push(event)
+  }
   
   function clearData() {
     pnlHistory.value = []
     logs.value = []
     backtestResult.value = null
+    accountEquity.value = null
+    orderEvents.value = []
   }
 
-  return { pnlHistory, logs, backtestResult, addPnlData, addLog, setBacktestResult, clearData }
+  return { pnlHistory, logs, backtestResult, accountEquity, orderEvents, addPnlData, addLog, setBacktestResult, setAccountEquity, addOrderEvent, clearData }
 })

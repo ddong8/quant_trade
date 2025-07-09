@@ -27,6 +27,10 @@ export function connectWebSocket(onOpen, onClose, onError) {
       dashboardStore.addLog(message.data)
     } else if (message.type === 'backtest_result') {
       dashboardStore.setBacktestResult(message.data)
+    } else if (message.type === 'account_update') {
+      dashboardStore.setAccountEquity(message.data.equity)
+    } else if (message.type === 'order_event') {
+      dashboardStore.addOrderEvent(message.data)
     }
   }
 

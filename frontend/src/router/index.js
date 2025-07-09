@@ -18,6 +18,10 @@ const router = createRouter({
       children: [
         {
           path: '',
+          redirect: '/strategies'
+        },
+        {
+          path: 'dashboard',
           name: 'dashboard',
           component: DashboardView,
           meta: { requiresAuth: true }

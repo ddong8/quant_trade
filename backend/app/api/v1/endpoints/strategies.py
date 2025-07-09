@@ -17,6 +17,14 @@ router = APIRouter()
 
 # --- Demo Strategy Code ---
 SMA_STRATEGY_CODE = """
+# -- 策略参数 --
+# !!! 重要: 请在此处替换为您自己的信易账户信息 !!!
+TQ_USER_NAME = "账户"
+TQ_PASSWORD = "密码"
+# !!! 重要: 请根据需要修改合约代码 !!!
+SYMBOL = "CZCE.FG509"
+
+# -- 策略逻辑 --
 import os
 import json
 from datetime import date
@@ -35,10 +43,9 @@ if is_backtest:
     )
     print(f"进入回测模式: {start_dt_str} to {end_dt_str}")
 
-# 在创建TqApi实例时，请传入自己的信易账户, TqAuth("信易账户", "账户", "密码")
-api = TqApi(auth=TqAuth("信易账户", "账户", "密码"), **backtest_options)
-klines = api.get_kline_serial("SHFE.rb2410", 60)
-position = api.get_position("SHFE.rb2410")
+api = TqApi(auth=TqAuth(TQ_USER_NAME, TQ_PASSWORD), **backtest_options)
+klines = api.get_kline_serial(SYMBOL, 60)
+position = api.get_position(SYMBOL)
 
 try:
     api.wait_update()
@@ -50,25 +57,21 @@ try:
             ma20 = sum(klines.close.iloc[-20:]) / 20
             if ma5 > ma20 and position.pos_long == 0:
                 print(f"金叉，MA5={ma5:.2f}, MA20={ma20:.2f}，买开")
-                api.insert_order(symbol="SHFE.rb2410", direction="BUY", offset="OPEN", volume=1, limit_price=klines.close.iloc[-1])
+                api.insert_order(symbol=SYMBOL, direction="BUY", offset="OPEN", volume=1, limit_price=klines.close.iloc[-1])
             elif ma5 < ma20 and position.pos_long > 0:
                 print(f"死叉，MA5={ma5:.2f}, MA20={ma20:.2f}，卖平")
-                api.insert_order(symbol="SHFE.rb2410", direction="SELL", offset="CLOSE", volume=1, limit_price=klines.close.iloc[-1])
+                api.insert_order(symbol=SYMBOL, direction="SELL", offset="CLOSE", volume=1, limit_price=klines.close.iloc[-1])
 finally:
-    if is_backtest:
-        summary = api.get_backtest_summary(as_json=True)
-        print(f"BACKTEST_SUMMARY:{json.dumps(summary)}")
     api.close()
 """
 
 RSI_STRATEGY_CODE = """
 # -- 策略参数 --
 # !!! 重要: 请在此处替换为您自己的信易账户信息 !!!
-TQ_ACCOUNT = "信易账户"
 TQ_USER_NAME = "账户"
 TQ_PASSWORD = "密码"
 # !!! 重要: 请根据需要修改合约代码 !!!
-SYMBOL = "SHFE.rb2410"
+SYMBOL = "CZCE.FG509"
 
 # -- 策略逻辑 --
 import os
@@ -89,51 +92,67 @@ if is_backtest:
     )
     print(f"进入回测模式: {start_dt_str} to {end_dt_str}")
 
-api = TqApi(auth=TqAuth(TQ_ACCOUNT, TQ_USER_NAME, TQ_PASSWORD), **backtest_options)
+api = TqApi(auth=TqAuth(TQ_USER_NAME, TQ_PASSWORD), **backtest_options)
 klines = api.get_kline_serial(SYMBOL, 3600)
 position = api.get_position(SYMBOL)
+account = api.get_account()
+wait_count = 0
 
 try:
     api.wait_update()
     print("策略开始运行")
     while True:
         api.wait_update()
+        wait_count += 1
+        # 每 10 次循环更新一次账户信息
+        if wait_count % 10 == 0 and api.is_changing(account):
+            print(f"ACCOUNT_UPDATE:{json.dumps({'equity': account.balance})}")
+
         if api.is_changing(klines.iloc[-1], "datetime"):
             rsi = talib.RSI(klines.close, timeperiod=14)
             if rsi.iloc[-1] > 70 and position.pos_short == 0:
                 print(f"RSI > 70 ({rsi.iloc[-1]:.2f}), 卖开")
-                api.insert_order(symbol=SYMBOL, direction="SELL", offset="OPEN", volume=1, limit_price=klines.close.iloc[-1])
+                order = api.insert_order(symbol=SYMBOL, direction="SELL", offset="OPEN", volume=1, limit_price=klines.close.iloc[-1])
+                print(f"ORDER_EVENT:{json.dumps({'timestamp': order.insert_date_time, 'direction': order.direction, 'offset': order.offset, 'price': order.limit_price, 'volume': order.volume})}")
             elif rsi.iloc[-1] < 30 and position.pos_short > 0:
                 print(f"RSI < 30 ({rsi.iloc[-1]:.2f}), 买平")
-                api.insert_order(symbol=SYMBOL, direction="BUY", offset="CLOSE", volume=1, limit_price=klines.close.iloc[-1])
+                order = api.insert_order(symbol=SYMBOL, direction="BUY", offset="CLOSE", volume=1, limit_price=klines.close.iloc[-1])
+                print(f"ORDER_EVENT:{json.dumps({'timestamp': order.insert_date_time, 'direction': order.direction, 'offset': order.offset, 'price': order.limit_price, 'volume': order.volume})}")
 finally:
-    if is_backtest:
-        summary = api.get_backtest_summary(as_json=True)
-        print(f"BACKTEST_SUMMARY:{json.dumps(summary)}")
     api.close()
 """
 
 running_strategies: Dict[int, asyncio.subprocess.Process] = {}
 
 async def stream_logs(stream: asyncio.StreamReader, strategy_id: int, log_type: str):
-    """Asynchronously read a stream and broadcast logs, checking for backtest summary."""
+    """Asynchronously read a stream and broadcast logs, checking for special formatted data."""
     while not stream.at_eof():
         line_bytes = await stream.readline()
-        if line_bytes:
-            line = line_bytes.decode().strip()
+        if not line_bytes:
+            continue
+        
+        line = line_bytes.decode().strip()
+        message = None
+
+        try:
             if line.startswith("BACKTEST_SUMMARY:"):
-                try:
-                    # Extract and parse the JSON part
-                    summary_json = line.split(":", 1)[1]
-                    summary_data = json.loads(summary_json)
-                    message = {"type": "backtest_result", "data": {"strategy_id": strategy_id, "summary": summary_data}}
-                except (IndexError, json.JSONDecodeError) as e:
-                    # If parsing fails, send as a normal log
-                    message = {"type": "log", "data": {"strategy_id": strategy_id, "log_type": "error", "message": f"Failed to parse backtest summary: {line}"}}
+                summary_json = line.split(":", 1)[1]
+                summary_data = json.loads(summary_json)
+                message = {"type": "backtest_result", "data": {"strategy_id": strategy_id, "summary": summary_data}}
+            elif line.startswith("ACCOUNT_UPDATE:"):
+                account_json = line.split(":", 1)[1]
+                account_data = json.loads(account_json)
+                message = {"type": "account_update", "data": {"strategy_id": strategy_id, **account_data}}
+            elif line.startswith("ORDER_EVENT:"):
+                order_json = line.split(":", 1)[1]
+                order_data = json.loads(order_json)
+                message = {"type": "order_event", "data": {"strategy_id": strategy_id, **order_data}}
             else:
-                # Regular log message
                 message = {"type": "log", "data": {"strategy_id": strategy_id, "log_type": log_type, "message": line}}
-            
+        except (IndexError, json.JSONDecodeError) as e:
+            message = {"type": "log", "data": {"strategy_id": strategy_id, "log_type": "error", "message": f"Failed to parse message: {line}"}}
+        
+        if message:
             await manager.broadcast(message)
 
 @router.post("/", response_model=StrategyInDB)
