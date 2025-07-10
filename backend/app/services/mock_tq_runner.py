@@ -13,6 +13,8 @@ class MockStrategyRunner:
         self._is_running = False
         self.thread = None
         self.pnl = 0.0
+        self.initial_equity = 100000.0  # 初始资金
+        self.account_equity = self.initial_equity
 
     def start(self):
         if self._is_running:
@@ -33,17 +35,35 @@ class MockStrategyRunner:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
+        # 首次运行时，发送初始账户状态
+        initial_account_update = {
+            "type": "account_update",
+            "data": {"equity": round(self.account_equity, 2)}
+        }
+        asyncio.run(manager.broadcast(initial_account_update))
+
         while self._is_running:
             try:
-                # 1. 模拟P&L变化
-                self.pnl += random.uniform(-150.5, 200.5)
+                # 1. 模拟P&L和账户权益变化
+                pnl_change = random.uniform(-150.5, 200.5)
+                self.pnl += pnl_change
+                self.account_equity += pnl_change
+
+                # 2. 发送 P&L 更新
                 pnl_update = {
                     "type": "pnl_update",
                     "data": {"pnl": round(self.pnl, 2), "timestamp": time.time()}
                 }
                 asyncio.run(manager.broadcast(pnl_update))
 
-                # 2. 模拟日志输出
+                # 3. 发送账户权益更新
+                account_update = {
+                    "type": "account_update",
+                    "data": {"equity": round(self.account_equity, 2)}
+                }
+                asyncio.run(manager.broadcast(account_update))
+
+                # 4. 模拟日志输出
                 if random.random() < 0.3: # 30%的概率产生日志
                     log_message = {
                         "type": "log",

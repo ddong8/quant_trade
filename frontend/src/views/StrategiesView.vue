@@ -78,6 +78,9 @@
 
     <n-modal v-model:show="showBacktestModal" preset="card" style="width: 600px;" title="运行回测">
       <n-form @submit.prevent="runBacktest">
+        <n-form-item label="合约代码 (TqSdk格式)">
+          <n-input v-model:value="backtestParams.symbol" placeholder="例如: SHFE.rb2510, CZCE.FG2509" />
+        </n-form-item>
         <n-form-item label="开始日期"><n-date-picker v-model:value="backtestParams.start_date" type="date" style="width: 100%;" /></n-form-item>
         <n-form-item label="结束日期"><n-date-picker v-model:value="backtestParams.end_date" type="date" style="width: 100%;" /></n-form-item>
         <n-button type="primary" attr-type="submit" block>开始回测</n-button>
@@ -129,7 +132,7 @@ const showBacktestReport = ref(false);
 const activeStrategy = ref(null);
 const newStrategyData = reactive({ name: '', description: '', script_content: '# 在此输入策略代码\n' });
 const editStrategyData = reactive({ id: null, code: '' });
-const backtestParams = reactive({ strategy_id: null, start_date: null, end_date: null });
+const backtestParams = reactive({ strategy_id: null, symbol: 'SHFE.rb2510', start_date: null, end_date: null });
 const wsStatus = ref('disconnected');
 
 // --- Monaco Editor ---
@@ -298,6 +301,7 @@ function openBacktestModal(strategy) {
 async function runBacktest() {
   try {
     const params = {
+      symbol: backtestParams.symbol,
       start_dt: new Date(backtestParams.start_date).toISOString().split('T')[0],
       end_dt: new Date(backtestParams.end_date).toISOString().split('T')[0],
     };
@@ -336,7 +340,7 @@ watch(pnlHistory, (newHistory) => {
 }, { deep: true });
 
 watch(orderEvents, (newEvent) => {
-  if (pnlChart) {
+  if (pnlChart && newEvent && newEvent.length > 0) {
     const lastEvent = newEvent[newEvent.length - 1];
     const markPoint = {
       symbol: lastEvent.direction === 'BUY' ? 'arrow' : 'pin',

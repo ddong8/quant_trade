@@ -51,6 +51,7 @@ starlette==0.46.2
 tqsdk==3.8.3
 tqsdk-ctpse==1.0.2
 tqsdk-sm==1.0.5
+tushare
 typing-inspection==0.4.1
 typing_extensions==4.14.1
 tzdata==2025.2
