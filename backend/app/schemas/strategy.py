@@ -1,5 +1,6 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
+from .backtest import BacktestResultInfo
 
 # Schema for receiving script content from the user
 class StrategyCreate(BaseModel):
@@ -25,6 +26,7 @@ class StrategyInDB(StrategyBase):
     status: str
     is_active: bool
     owner: str
+    backtest_results: List[BacktestResultInfo] = []
 
     class Config:
         from_attributes = True

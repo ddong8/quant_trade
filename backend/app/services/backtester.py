@@ -2,10 +2,15 @@
 import pandas as pd
 from app.services.data_service import data_service
 from typing import Dict, Any, List
+from sqlalchemy.orm import Session
+
+from app.schemas.backtest import KlineDuration, BacktestResultCreate
+from app.crud import crud_backtest
 
 class SimpleBacktester:
-    def __init__(self, symbol: str, start_date: str, end_date: str, strategy_code: str, initial_cash: float = 100000.0):
+    def __init__(self, symbol: str, duration: KlineDuration, start_date: str, end_date: str, strategy_code: str, initial_cash: float = 100000.0):
         self.symbol = symbol
+        self.duration = duration
         self.start_date = start_date
         self.end_date = end_date
         self.strategy_code = strategy_code
@@ -42,7 +47,7 @@ class SimpleBacktester:
         Run the backtest and return the results.
         """
         # 1. Get data
-        data = data_service.get_daily_data(self.symbol, self.start_date, self.end_date)
+        data = data_service.get_kline_data(self.symbol, self.duration, self.start_date, self.end_date)
         if data.empty:
             raise ValueError("Failed to fetch data for backtest.")
 
@@ -84,21 +89,25 @@ class SimpleBacktester:
         equity_df = pd.DataFrame(self.equity_curve)
         equity_df['date'] = pd.to_datetime(equity_df['date'])
         
-        total_return = (self.total_equity / self.initial_cash - 1) * 100
+        total_return = (self.total_equity / self.initial_cash - 1)
         
         days = (equity_df['date'].iloc[-1] - equity_df['date'].iloc[0]).days
-        annual_return = ((1 + total_return / 100) ** (365.0 / days) - 1) * 100 if days > 0 else 0
+        annual_return = ((1 + total_return) ** (365.0 / days) - 1) if days > 0 else 0
         
+        equity_df['returns'] = equity_df['pnl'].pct_change().fillna(0)
+        sharpe_ratio = (equity_df['returns'].mean() / equity_df['returns'].std()) * (252 ** 0.5) if equity_df['returns'].std() != 0 else 0
+
         equity_df['peak'] = equity_df['pnl'].cummax()
         equity_df['drawdown'] = (equity_df['pnl'] - equity_df['peak']) / equity_df['peak']
-        max_drawdown = equity_df['drawdown'].min() * 100
+        max_drawdown = equity_df['drawdown'].min()
 
         summary = {
-            "Total Return": f"{total_return:.2f}%",
-            "Annualized Return": f"{annual_return:.2f}%",
-            "Max Drawdown": f"{max_drawdown:.2f}%",
-            "Final Equity": f"¥{self.total_equity:,.2f}",
-            "Initial Equity": f"¥{self.initial_cash:,.2f}",
+            "total_return": total_return,
+            "annualized_return": annual_return,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "final_equity": self.total_equity,
+            "initial_equity": self.initial_cash,
         }
         
         result = {
@@ -107,7 +116,7 @@ class SimpleBacktester:
         }
         return result
 
-def run_backtest_for_strategy(strategy_id: int, strategy_code: str, symbol: str, start_dt: str, end_dt: str) -> Dict[str, Any]:
+def run_backtest_for_strategy(db: Session, strategy_id: int, strategy_code: str, symbol: str, duration: KlineDuration, start_dt: str, end_dt: str) -> Dict[str, Any]:
     """
     Entry point for running a backtest for a specific strategy.
     """
@@ -115,9 +124,19 @@ def run_backtest_for_strategy(strategy_id: int, strategy_code: str, symbol: str,
     end_date_formatted = pd.to_datetime(end_dt).strftime('%Y%m%d')
 
     try:
-        backtester = SimpleBacktester(symbol, start_date_formatted, end_date_formatted, strategy_code)
+        backtester = SimpleBacktester(symbol, duration, start_date_formatted, end_date_formatted, strategy_code)
         result = backtester.run()
         result['strategy_id'] = strategy_id
+        
+        # Save result to DB
+        if "error" not in result["summary"]:
+            result_to_save = BacktestResultCreate(
+                strategy_id=strategy_id,
+                summary=result["summary"],
+                daily_pnl=result["daily_pnl"]
+            )
+            crud_backtest.create_backtest_result(db, obj_in=result_to_save)
+
         return result
     except Exception as e:
         print(f"Backtest failed for strategy {strategy_id}: {e}")

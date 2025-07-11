@@ -48,6 +48,7 @@
                 <n-button size="small" @click="stopStrategy(strategy.id)" :disabled="strategy.status !== 'running' && !backtesting_ids.has(strategy.id)">停止</n-button>
                 <n-button size="small" type="primary" ghost @click="openEditModal(strategy)">编辑</n-button>
                 <n-button size="small" type="info" ghost @click="openBacktestModal(strategy)" :disabled="backtesting_ids.has(strategy.id)">回测</n-button>
+                <n-button size="small" type="default" ghost @click="openHistoryModal(strategy)">历史报告</n-button>
                 <n-button size="small" type="error" ghost @click="deleteStrategy(strategy.id)">删除</n-button>
               </n-space>
             </template>
@@ -78,9 +79,12 @@
 
     <n-modal v-model:show="showBacktestModal" preset="card" style="width: 600px;" title="运行回测">
       <n-form @submit.prevent="runBacktest">
-        <n-form-item label="合约代码 (TqSdk格式)">
-          <n-input v-model:value="backtestParams.symbol" placeholder="例如: SHFE.rb2510, CZCE.FG2509" />
-        </n-form-item>
+        <n-form-item path="symbol" label="合约代码">
+            <n-input v-model:value="backtestParams.symbol" @keydown.enter.prevent />
+          </n-form-item>
+          <n-form-item path="duration" label="K线周期">
+            <n-select v-model:value="backtestParams.duration" :options="durationOptions" />
+          </n-form-item>
         <n-form-item label="开始日期"><n-date-picker v-model:value="backtestParams.start_date" type="date" style="width: 100%;" /></n-form-item>
         <n-form-item label="结束日期"><n-date-picker v-model:value="backtestParams.end_date" type="date" style="width: 100%;" /></n-form-item>
         <n-button type="primary" attr-type="submit" block>开始回测</n-button>
@@ -103,18 +107,28 @@
       </n-spin>
     </n-modal>
 
+    <n-modal v-model:show="showHistoryModal" preset="card" style="width: 800px;" title="历史回测报告">
+      <n-data-table
+        :columns="historyColumns"
+        :data="backtestHistory"
+        :pagination="false"
+        :bordered="false"
+      />
+    </n-modal>
+
   </n-space>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, reactive, nextTick, watch, computed } from 'vue';
-import { NSpace, NGrid, NGi, NCard, NTag, NButton, useMessage, NSpin, NForm, NFormItem, NInput, NEmpty, NModal, useDialog, NLog, NDatePicker, NDescriptions, NDescriptionsItem, NAlert, NStatistic, NNumberAnimation } from 'naive-ui';
+import { NSpace, NGrid, NGi, NCard, NTag, NButton, useMessage, NSpin, NForm, NFormItem, NInput, NEmpty, NModal, useDialog, NLog, NDatePicker, NDescriptions, NDescriptionsItem, NAlert, NStatistic, NNumberAnimation, NSelect, NDataTable } from 'naive-ui';
 import * as monaco from 'monaco-editor';
 import * as echarts from 'echarts';
 import api from '@/services/api';
 import { useDashboardStore } from '@/stores/dashboard';
 import { connectWebSocket, disconnectWebSocket } from '@/services/websocket';
 import { storeToRefs } from 'pinia';
+import { h } from 'vue';
 
 // --- Store and Services ---
 const message = useMessage();
@@ -129,10 +143,26 @@ const showCreateModal = ref(false);
 const showEditModal = ref(false);
 const showBacktestModal = ref(false);
 const showBacktestReport = ref(false);
+const showHistoryModal = ref(false);
+const backtestHistory = ref([]);
 const activeStrategy = ref(null);
 const newStrategyData = reactive({ name: '', description: '', script_content: '# 在此输入策略代码\n' });
 const editStrategyData = reactive({ id: null, code: '' });
-const backtestParams = reactive({ strategy_id: null, symbol: 'SHFE.rb2510', start_date: null, end_date: null });
+const backtestParams = reactive({
+  strategy_id: null,
+  symbol: 'SHFE.rb2501',
+  duration: '1d',
+  start_date: null,
+  end_date: null
+});
+
+const durationOptions = [
+  { label: '日线', value: '1d' },
+  { label: '1小时', value: '1h' },
+  { label: '15分钟', value: '15m' },
+  { label: '5分钟', value: '5m' },
+  { label: '1分钟', value: '1m' },
+];
 const wsStatus = ref('disconnected');
 
 // --- Monaco Editor ---
@@ -164,6 +194,27 @@ const statusMap = {
   running: { text: '运行中', type: 'success' },
   error: { text: '错误', type: 'error' },
 };
+
+const historyColumns = [
+    { title: '回测ID', key: 'id' },
+    { title: '创建时间', key: 'created_at', render: (row) => new Date(row.created_at).toLocaleString() },
+    { title: '夏普比率', key: 'sharpe_ratio', render: (row) => row.sharpe_ratio ? row.sharpe_ratio.toFixed(2) : 'N/A' },
+    { title: '最大回撤', key: 'max_drawdown', render: (row) => row.max_drawdown ? `${(row.max_drawdown * 100).toFixed(2)}%` : 'N/A' },
+    {
+        title: '操作',
+        key: 'actions',
+        render(row) {
+            return h(
+                NButton,
+                {
+                    size: 'small',
+                    onClick: () => showReportFromHistory(row.id)
+                },
+                { default: () => '查看报告' }
+            );
+        }
+    }
+];
 
 // --- Charting Functions ---
 const initPnlChart = () => {
@@ -225,14 +276,23 @@ async function handleCreateStrategy() {
 function openEditModal(strategy) {
   activeStrategy.value = strategy;
   editStrategyData.id = strategy.id;
+  // 先将代码设置为空，防止显��上一个策略的旧代码
+  editStrategyData.code = '// Loading...';
+  showEditModal.value = true;
+
   api.get(`/strategies/${strategy.id}/script`).then(response => {
     editStrategyData.code = response.data.script_content || `// ${strategy.name} 的策略代码`;
-    showEditModal.value = true;
     nextTick(() => {
-      if (editorContainer.value && !monacoInstance) {
-        monacoInstance = monaco.editor.create(editorContainer.value, { value: editStrategyData.code, language: 'python', theme: 'vs-dark' });
-      } else if (monacoInstance) {
-        monacoInstance.setValue(editStrategyData.code);
+      if (editorContainer.value) {
+        if (!monacoInstance) {
+          monacoInstance = monaco.editor.create(editorContainer.value, {
+            value: editStrategyData.code,
+            language: 'python',
+            theme: 'vs-dark'
+          });
+        } else {
+          monacoInstance.setValue(editStrategyData.code);
+        }
       }
     });
   }).catch(() => message.error('加载策略代码失败'));
@@ -302,10 +362,11 @@ async function runBacktest() {
   try {
     const params = {
       symbol: backtestParams.symbol,
-      start_dt: new Date(backtestParams.start_date).toISOString().split('T')[0],
-      end_dt: new Date(backtestParams.end_date).toISOString().split('T')[0],
+      duration: backtestParams.duration,
+      start_dt: new Date(backtestParams.start_date).toISOString(),
+      end_dt: new Date(backtestParams.end_date).toISOString(),
     };
-    await api.post(`/strategies/${backtestParams.strategy_id}/backtest`, params);
+    await api.runBacktest(backtestParams.strategy_id, params);
     message.success('回测任务已启动');
     backtesting_ids.value.add(backtestParams.strategy_id);
     showBacktestModal.value = false;
@@ -314,12 +375,36 @@ async function runBacktest() {
   }
 }
 
+async function openHistoryModal(strategy) {
+    try {
+        const { data } = await api.getBacktestHistory(strategy.id);
+        backtestHistory.value = data;
+        showHistoryModal.value = true;
+    } catch (error) {
+        message.error('获取历史报告失败');
+    }
+}
+
+async function showReportFromHistory(backtestId) {
+    try {
+        const { data } = await api.getBacktestReport(backtestId);
+        dashboardStore.setBacktestResult(data);
+        showHistoryModal.value = false; // Close history modal
+        showBacktestReport.value = true; // Show the main report modal
+        nextTick(() => renderBacktestChart(data));
+    } catch (error) {
+        message.error('加载报告详情失败');
+    }
+}
+
 const formatSummaryValue = (key, value) => {
-  if (typeof value === 'number') {
-    if (key.includes('ratio') || key.includes('rate')) return `${(value * 100).toFixed(2)}%`;
-    return value.toFixed(2);
+  const keyName = key.toLowerCase();
+  if (typeof value !== 'number') return value;
+
+  if (keyName.includes('ratio') || keyName.includes('rate') || keyName.includes('return') || keyName.includes('drawdown')) {
+    return `${(value * 100).toFixed(2)}%`;
   }
-  return value;
+  return value.toFixed(2);
 };
 
 const closeReportModal = () => {
@@ -361,8 +446,18 @@ watch(orderEvents, (newEvent) => {
 watch(backtestResult, (newResult) => {
   if (newResult) {
     backtesting_ids.value.delete(newResult.strategy_id);
+    fetchStrategies(); // Refresh strategies to get updated backtest_results list
+
+    // 将回测结果添加到日志中
+    const timestamp = new Date().toLocaleTimeString();
+    const summaryText = Object.entries(newResult.summary)
+      .map(([key, value]) => `${key}: ${formatSummaryValue(key, value)}`)
+      .join(', ');
+    const logMessage = `[${timestamp}] [Backtest Result for Strategy ${newResult.strategy_id}] ${summaryText}`;
+    logs.value.unshift(logMessage);
+
     showBacktestReport.value = true;
-    nextTick(() => renderBacktestChart(newResult.summary));
+    nextTick(() => renderBacktestChart(newResult));
   }
 });
 

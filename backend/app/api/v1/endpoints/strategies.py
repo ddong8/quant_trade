@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.api import deps
 import app.crud.crud_strategy as crud
+import app.crud.crud_backtest as crud_backtest
 from app.schemas.strategy import Strategy, StrategyCreate, StrategyUpdate, StrategyInDB
-from app.schemas.backtest import BacktestRequest
+from app.schemas.backtest import BacktestRequest, KlineDuration, BacktestResultInDB, BacktestResultInfo
 from app.services.websocket_manager import manager
 # --- 新增导入 ---
 from app.services.backtester import run_backtest_for_strategy
@@ -18,30 +19,6 @@ from app.services.mock_tq_runner import start_strategy_runner, stop_strategy_run
 
 router = APIRouter()
 
-# --- Demo Strategy Code (可以保留作为新用户的示例代码) ---
-SMA_STRATEGY_CODE = """
-# 这是一个简单的双均线策略示例
-# 平台会自动注入 `data` (一个包含OHLCV的DataFrame)
-# 您需要实现一个 `run_strategy` 函数
-
-import pandas as pd
-
-def run_strategy(data: pd.DataFrame):
-    # 计算5日和10日移动平均线
-    data['ma5'] = data['close'].rolling(window=5).mean()
-    data['ma10'] = data['close'].rolling(window=10).mean()
-    
-    signals = []
-    for i in range(1, len(data)):
-        # 金叉买入信号
-        if data.loc[i-1, 'ma5'] < data.loc[i-1, 'ma10'] and data.loc[i, 'ma5'] > data.loc[i, 'ma10']:
-            signals.append({'date': data.loc[i, 'trade_date'], 'signal': 'buy'})
-        # 死叉卖出信号
-        elif data.loc[i-1, 'ma5'] > data.loc[i-1, 'ma10'] and data.loc[i, 'ma5'] < data.loc[i, 'ma10']:
-            signals.append({'date': data.loc[i, 'trade_date'], 'signal': 'sell'})
-            
-    return signals
-"""
 
 # --- 策略运行状态管理 ---
 # 注意：这里的 running_strategies 现在只用于管理模拟实时运行的策略
@@ -66,10 +43,6 @@ def read_strategies(
     current_user: dict = Depends(deps.get_current_user),
 ):
     strategies = crud.get_strategies(db, owner=current_user["username"], skip=skip, limit=limit)
-    if not strategies:
-        owner = current_user["username"]
-        crud.create_strategy(db, StrategyCreate(name="双均线策略 (Demo)", description="经典的趋势跟踪策略", script_content=SMA_STRATEGY_CODE), owner=owner)
-        strategies = crud.get_strategies(db, owner=owner, skip=skip, limit=limit)
     
     # 同步运行状态
     for s in strategies:
@@ -108,7 +81,14 @@ def get_strategy_script(
     if db_strategy.owner != current_user["username"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
     
-    return {"script_content": db_strategy.script_content}
+    try:
+        with open(db_strategy.script_path, "r") as f:
+            script_content = f.read()
+    except (FileNotFoundError, TypeError):
+        # 如果文件找不到或路径无效，返回空字符串或默认代码
+        script_content = "# Strategy script not found or path is invalid."
+    
+    return {"script_content": script_content}
 
 @router.post("/{strategy_id}/start", response_model=Strategy)
 async def start_strategy(
@@ -149,11 +129,15 @@ async def stop_strategy(
     return db_strategy
 
 # --- 新的回测实现 ---
-async def run_backtest_and_notify(db: Session, strategy_id: int, symbol: str, start_dt: str, end_dt: str):
+async def run_backtest_and_notify(strategy_id: int, symbol: str, duration: KlineDuration, start_dt: str, end_dt: str):
     """
     执行回测并通过WebSocket发送结果的后台任务
     """
-    print(f"Starting backtest for strategy {strategy_id} on {symbol} from {start_dt} to {end_dt}")
+    print(f"Starting backtest for strategy {strategy_id} on {symbol} ({duration.value}) from {start_dt} to {end_dt}")
+    
+    # Create a new database session for this background task
+    db = next(deps.get_db())
+    
     try:
         # 从数据库获取策略实体
         db_strategy = crud.get_strategy(db, strategy_id=strategy_id)
@@ -166,13 +150,16 @@ async def run_backtest_and_notify(db: Session, strategy_id: int, symbol: str, st
 
         # 运行回测
         result = await asyncio.to_thread(
-            run_backtest_for_strategy, 
+            run_backtest_for_strategy,
+            db, 
             strategy_id, 
             strategy_code,
             symbol,
+            duration,
             start_dt, 
             end_dt
         )
+
         message = {"type": "backtest_result", "data": result}
         await manager.broadcast(message)
         print(f"Backtest for strategy {strategy_id} completed and results sent.")
@@ -180,14 +167,16 @@ async def run_backtest_and_notify(db: Session, strategy_id: int, symbol: str, st
         print(f"An error occurred during backtest for strategy {strategy_id}: {e}")
         error_message = {"type": "backtest_result", "data": {"strategy_id": strategy_id, "summary": {"error": str(e)}}}
         await manager.broadcast(error_message)
+    finally:
+        db.close()
 
 @router.post("/{strategy_id}/backtest")
 async def backtest_strategy(
     strategy_id: int,
     backtest_in: BacktestRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(deps.get_db),
     current_user: dict = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db)
 ):
     """使用新的回测服务运行策略回测"""
     db_strategy = crud.get_strategy(db, strategy_id=strategy_id)
@@ -201,15 +190,32 @@ async def backtest_strategy(
     # 将耗时的回测任务添加到后台
     background_tasks.add_task(
         run_backtest_and_notify,
-        db,
         strategy_id,
         backtest_in.symbol,
+        backtest_in.duration,
         backtest_in.start_dt.isoformat(),
         backtest_in.end_dt.isoformat()
     )
     
     # 立即返回，告知前端任务已启动
     return {"message": "Backtest started in the background. Results will be sent via WebSocket."}
+
+@router.get("/{strategy_id}/backtests", response_model=List[BacktestResultInfo])
+def get_strategy_backtest_history(
+    strategy_id: int,
+    db: Session = Depends(deps.get_db),
+    current_user: dict = Depends(deps.get_current_user),
+):
+    db_strategy = crud.get_strategy(db, strategy_id=strategy_id)
+    if not db_strategy:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
+    if db_strategy.owner != current_user["username"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
+    
+    results = crud_backtest.get_backtest_results_by_strategy(db, strategy_id=strategy_id)
+    return results
+
+
 
 @router.delete("/{strategy_id}", response_model=Strategy)
 def delete_strategy(

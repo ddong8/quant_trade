@@ -6,7 +6,7 @@ import router from '@/router'
 import api from '@/services/api'
 
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(null); // 初始化为 null
+  const token = ref(localStorage.getItem('token') || null);
   const user = ref(null);
 
   const isAuthenticated = computed(() => !!token.value);
@@ -15,26 +15,14 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = newToken;
     if (newToken) {
       localStorage.setItem('token', newToken);
-      api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
     } else {
       localStorage.removeItem('token');
-      delete api.defaults.headers.common['Authorization'];
     }
   }
 
   async function login(credentials) {
-    // ... login 函数保持不变 ...
     try {
-      const formData = new URLSearchParams();
-      formData.append('username', credentials.username);
-      formData.append('password', credentials.password);
-      
-      const { data } = await api.post('/login/access-token', formData, {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      });
-      
+      const { data } = await api.login(credentials);
       setToken(data.access_token);
       router.push({ name: 'dashboard' });
     } catch (error) {
@@ -56,8 +44,6 @@ export const useAuthStore = defineStore('auth', () => {
       setToken(storedToken);
     }
   }
-  
-  // 不再在这里自动调用 checkAuthOnLoad()
 
-  return { token, user, isAuthenticated, login, logout, checkAuthOnLoad }; // 导出 checkAuthOnLoad
+  return { token, user, isAuthenticated, login, logout, checkAuthOnLoad };
 })

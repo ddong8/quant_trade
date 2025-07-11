@@ -1,4 +1,4 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.models.strategy import Strategy
 from app.schemas.strategy import StrategyCreate, StrategyUpdate
 import uuid
@@ -9,10 +9,10 @@ STRATEGIES_DIR = Path(__file__).parent.parent.parent / "strategies_code"
 STRATEGIES_DIR.mkdir(exist_ok=True) # Ensure the directory exists
 
 def get_strategy(db: Session, strategy_id: int):
-    return db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    return db.query(Strategy).options(joinedload(Strategy.backtest_results)).filter(Strategy.id == strategy_id).first()
 
 def get_strategies(db: Session, owner: str, skip: int = 0, limit: int = 100):
-    return db.query(Strategy).filter(Strategy.owner == owner).offset(skip).limit(limit).all()
+    return db.query(Strategy).options(joinedload(Strategy.backtest_results)).filter(Strategy.owner == owner).offset(skip).limit(limit).all()
 
 def create_strategy(db: Session, strategy: StrategyCreate, owner: str):
     # Generate a unique filename for the script
