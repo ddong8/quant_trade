@@ -14,8 +14,12 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Token有效期：24小时
 
 # 数据库设置
 # 优先从环境变量读取DATABASE_URL，否则使用本地的SQLite数据库
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./quant_trade.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/quant_trade.db")
 
 # Tushare API Token
 # 警告: 请替换成你自己的Tushare Token
 TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "YOUR_TUSHARE_TOKEN")
+
+# Celery and Redis Settings
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")

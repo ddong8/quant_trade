@@ -6,7 +6,7 @@ from .backtest import BacktestResultInfo
 class StrategyCreate(BaseModel):
     name: str
     description: Optional[str] = None
-    script_content: str
+    script_content: Optional[str] = None
 
 # Base schema for database and API responses
 class StrategyBase(BaseModel):

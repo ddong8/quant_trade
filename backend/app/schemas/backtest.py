@@ -32,13 +32,25 @@ class BacktestResultBase(BaseModel):
 
 # Properties to receive on creation
 class BacktestResultCreate(BacktestResultBase):
-    summary: Dict[str, Any]
-    daily_pnl: List[Dict[str, Any]]
+    symbol: str
+    duration: KlineDuration
+    start_dt: datetime
+    end_dt: datetime
+    status: str = "PENDING"
+
+# Properties to receive on update
+class BacktestResultUpdate(BaseModel):
+    task_id: str | None = None
+    status: str | None = None
+    summary: Dict[str, Any] | None = None
+    daily_pnl: List[Dict[str, Any]] | None = None
 
 # Properties to return to client
 class BacktestResultInDB(BacktestResultCreate):
     id: int
     created_at: datetime
+    summary: Dict[str, Any] | None = None
+    daily_pnl: List[Dict[str, Any]] | None = None
 
     class Config:
         from_attributes = True
@@ -49,6 +61,7 @@ class BacktestResultInDB(BacktestResultCreate):
 class BacktestResultInfo(BaseModel):
     id: int
     created_at: datetime
+    status: str
     sharpe_ratio: float | None = None
     max_drawdown: float | None = None
 
@@ -57,3 +70,8 @@ class BacktestResultInfo(BaseModel):
         json_encoders = {
             datetime: datetime_encoder
         }
+
+
+class BacktestRunResponse(BaseModel):
+    task_id: str | None = None
+    backtest_id: int

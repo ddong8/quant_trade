@@ -2,10 +2,9 @@ import { useDashboardStore } from '@/stores/dashboard'
 
 let socket = null
 
-const WS_URL = 'ws://localhost:8000/api/v1/ws/data';
-
-export function connectWebSocket(onOpen, onClose, onError) {
+export function connectWebSocket(backtestId, onOpen, onClose, onError) {
   const dashboardStore = useDashboardStore()
+  const WS_URL = `ws://localhost:8000/api/v1/ws/backtest/${backtestId}`;
   
   if (socket && socket.readyState === WebSocket.OPEN) {
     console.log("WebSocket is already connected.");
@@ -43,6 +42,14 @@ export function connectWebSocket(onOpen, onClose, onError) {
   socket.onerror = (error) => {
     console.error('WebSocket Error:', error)
     if (onError) onError(error)
+  }
+}
+
+export function sendWebSocketMessage(message) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(message));
+  } else {
+    console.error('WebSocket is not connected.');
   }
 }
 

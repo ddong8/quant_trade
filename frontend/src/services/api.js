@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { useAuthStore } from '@/stores/auth';
+import router from '@/router'; // 引入 router
 
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1',
+  baseURL: '/api/v1',
   headers: {
     'Content-Type': 'application/json',
   },
@@ -22,6 +23,20 @@ apiClient.interceptors.request.use(
     return Promise.reject(error);
   }
 );
+
+// Add a response interceptor to handle auth errors
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && [401, 403].includes(error.response.status)) {
+      const authStore = useAuthStore();
+      authStore.logout(); // 清除 token 和用户信息
+      router.push('/login'); // 重定向到登录页
+    }
+    return Promise.reject(error);
+  }
+);
+
 
 export default {
   // Auth
@@ -54,8 +69,8 @@ export default {
   runBacktest(strategyId, params) {
     return apiClient.post(`/strategies/${strategyId}/backtest`, params);
   },
-  getBacktestHistory(strategyId) {
-    return apiClient.get(`/strategies/${strategyId}/backtests`);
+  getBacktestHistoryForStrategy(strategyId) {
+    return apiClient.get(`/backtests/history/${strategyId}`);
   },
   getBacktestReport(backtestId) {
     return apiClient.get(`/backtests/${backtestId}`);

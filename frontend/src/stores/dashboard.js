@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import apiService from '../services/api'
 
 export const useDashboardStore = defineStore('dashboard', () => {
   const pnlHistory = ref([])
@@ -7,6 +8,30 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const backtestResult = ref(null)
   const accountEquity = ref(null)
   const orderEvents = ref([])
+  const backtestHistory = ref([])
+
+  async function fetchBacktestHistory(strategyId) {
+    try {
+      const response = await apiService.getBacktestHistoryForStrategy(strategyId)
+      backtestHistory.value = response.data
+    } catch (error) {
+      console.error('Error fetching backtest history:', error)
+      // Handle error appropriately in the UI
+    }
+  }
+
+  async function runBacktest(strategyId, params) {
+    try {
+      const response = await apiService.runBacktest(strategyId, params)
+      // After starting a new backtest, refresh the history
+      await fetchBacktestHistory(strategyId)
+      return response.data // Return the response which might contain the task ID
+    } catch (error) {
+      console.error('Error running backtest:', error)
+      // Handle error appropriately in the UI
+      throw error
+    }
+  }
 
   function addPnlData(data) {
     // 保持最多100个数据点
@@ -43,7 +68,23 @@ export const useDashboardStore = defineStore('dashboard', () => {
     backtestResult.value = null
     accountEquity.value = null
     orderEvents.value = []
+    backtestHistory.value = []
   }
 
-  return { pnlHistory, logs, backtestResult, accountEquity, orderEvents, addPnlData, addLog, setBacktestResult, setAccountEquity, addOrderEvent, clearData }
+  return { 
+    pnlHistory, 
+    logs, 
+    backtestResult, 
+    accountEquity, 
+    orderEvents, 
+    backtestHistory,
+    fetchBacktestHistory,
+    runBacktest,
+    addPnlData, 
+    addLog, 
+    setBacktestResult, 
+    setAccountEquity, 
+    addOrderEvent, 
+    clearData 
+  }
 })

@@ -78,7 +78,7 @@
     </n-modal>
 
     <n-modal v-model:show="showBacktestModal" preset="card" style="width: 600px;" title="运行回测">
-      <n-form @submit.prevent="runBacktest">
+      <n-form @submit.prevent="handleRunBacktest">
         <n-form-item path="symbol" label="合约代码">
             <n-input v-model:value="backtestParams.symbol" @keydown.enter.prevent />
           </n-form-item>
@@ -134,7 +134,7 @@ import { h } from 'vue';
 const message = useMessage();
 const dialog = useDialog();
 const dashboardStore = useDashboardStore();
-const { pnlHistory, logs, accountEquity, orderEvents, backtestResult } = storeToRefs(dashboardStore);
+const { pnlHistory, logs, accountEquity, orderEvents, backtestResult, backtestHistory } = storeToRefs(dashboardStore);
 
 // --- Local State ---
 const strategies = ref([]);
@@ -144,9 +144,8 @@ const showEditModal = ref(false);
 const showBacktestModal = ref(false);
 const showBacktestReport = ref(false);
 const showHistoryModal = ref(false);
-const backtestHistory = ref([]);
 const activeStrategy = ref(null);
-const newStrategyData = reactive({ name: '', description: '', script_content: '# 在此输入策略代码\n' });
+const newStrategyData = reactive({ name: '', description: '' });
 const editStrategyData = reactive({ id: null, code: '' });
 const backtestParams = reactive({
   strategy_id: null,
@@ -164,6 +163,7 @@ const durationOptions = [
   { label: '1分钟', value: '1m' },
 ];
 const wsStatus = ref('disconnected');
+let pollingInterval = null;
 
 // --- Monaco Editor ---
 const editorContainer = ref(null);
@@ -198,6 +198,7 @@ const statusMap = {
 const historyColumns = [
     { title: '回测ID', key: 'id' },
     { title: '创建时间', key: 'created_at', render: (row) => new Date(row.created_at).toLocaleString() },
+    { title: '状态', key: 'status' },
     { title: '夏普比率', key: 'sharpe_ratio', render: (row) => row.sharpe_ratio ? row.sharpe_ratio.toFixed(2) : 'N/A' },
     { title: '最大回撤', key: 'max_drawdown', render: (row) => row.max_drawdown ? `${(row.max_drawdown * 100).toFixed(2)}%` : 'N/A' },
     {
@@ -208,7 +209,8 @@ const historyColumns = [
                 NButton,
                 {
                     size: 'small',
-                    onClick: () => showReportFromHistory(row.id)
+                    onClick: () => showReportFromHistory(row.id),
+                    disabled: row.status !== 'completed'
                 },
                 { default: () => '查看报告' }
             );
@@ -260,14 +262,19 @@ async function fetchStrategies() {
 
 async function handleCreateStrategy() {
   try {
+    // Now we only need to send name and description.
+    // The backend will handle the creation of the default script.
     const { data: newStrategy } = await api.post('/strategies/', newStrategyData);
     message.success('策略创建成功');
     showCreateModal.value = false;
     newStrategyData.name = '';
     newStrategyData.description = '';
     await fetchStrategies();
+    // Automatically open the editor for the newly created strategy
     const strategyToEdit = strategies.value.find(s => s.id === newStrategy.id);
-    if (strategyToEdit) openEditModal(strategyToEdit);
+    if (strategyToEdit) {
+      openEditModal(strategyToEdit);
+    }
   } catch (error) {
     message.error('策略创建失败');
   }
@@ -276,12 +283,12 @@ async function handleCreateStrategy() {
 function openEditModal(strategy) {
   activeStrategy.value = strategy;
   editStrategyData.id = strategy.id;
-  // 先将代码设置为空，防止显��上一个策略的旧代码
+  // Set a placeholder while loading
   editStrategyData.code = '// Loading...';
   showEditModal.value = true;
 
   api.get(`/strategies/${strategy.id}/script`).then(response => {
-    editStrategyData.code = response.data.script_content || `// ${strategy.name} 的策略代码`;
+    editStrategyData.code = response.data.script_content || `// Code for ${strategy.name}`;
     nextTick(() => {
       if (editorContainer.value) {
         if (!monacoInstance) {
@@ -295,7 +302,7 @@ function openEditModal(strategy) {
         }
       }
     });
-  }).catch(() => message.error('加载策略代码失败'));
+  }).catch(() => message.error('Failed to load strategy code.'));
 }
 
 async function handleUpdateStrategy() {
@@ -326,6 +333,7 @@ async function stopStrategy(id) {
     await api.post(`/strategies/${id}/stop`);
     message.success('策略已停止');
     backtesting_ids.value.delete(id);
+    disconnectWebSocket();
     fetchStrategies();
   } catch (error) {
     message.error('停止策略失败');
@@ -358,7 +366,11 @@ function openBacktestModal(strategy) {
   showBacktestModal.value = true;
 }
 
-async function runBacktest() {
+import { sendWebSocketMessage } from '@/services/websocket';
+
+// ... (rest of the script setup)
+
+async function handleRunBacktest() {
   try {
     const params = {
       symbol: backtestParams.symbol,
@@ -366,23 +378,44 @@ async function runBacktest() {
       start_dt: new Date(backtestParams.start_date).toISOString(),
       end_dt: new Date(backtestParams.end_date).toISOString(),
     };
-    await api.runBacktest(backtestParams.strategy_id, params);
-    message.success('回测任务已启动');
+
+    // 1. Create the backtest record and get the ID
+    const response = await dashboardStore.runBacktest(backtestParams.strategy_id, params);
+    const backtestId = response.backtest_id;
+
+    message.success(`回测记录已创建 (ID: ${backtestId})`);
     backtesting_ids.value.add(backtestParams.strategy_id);
     showBacktestModal.value = false;
+
+    // 2. Connect to the WebSocket
+    connectWebSocket(
+      backtestId,
+      () => { // onOpen
+        wsStatus.value = 'connected';
+        message.success("实时通道已连接，准备开始回测...");
+        // 3. Send the start message
+        sendWebSocketMessage({ action: 'start' });
+      },
+      () => { // onClose
+        wsStatus.value = 'disconnected';
+        message.warning("实时通道已断开");
+      },
+      () => { // onError
+        wsStatus.value = 'error';
+        message.error("实时通道连接失败");
+      }
+    );
+
   } catch (error) {
     message.error('启动回测失败');
   }
 }
 
 async function openHistoryModal(strategy) {
-    try {
-        const { data } = await api.getBacktestHistory(strategy.id);
-        backtestHistory.value = data;
-        showHistoryModal.value = true;
-    } catch (error) {
-        message.error('获取历史报告失败');
-    }
+    activeStrategy.value = strategy;
+    await dashboardStore.fetchBacktestHistory(strategy.id);
+    showHistoryModal.value = true;
+    startPolling(strategy.id);
 }
 
 async function showReportFromHistory(backtestId) {
@@ -395,6 +428,26 @@ async function showReportFromHistory(backtestId) {
     } catch (error) {
         message.error('加载报告详情失败');
     }
+}
+
+function startPolling(strategyId) {
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+  }
+  pollingInterval = setInterval(async () => {
+    await dashboardStore.fetchBacktestHistory(strategyId);
+    const isStillRunning = backtestHistory.value.some(b => ['pending', 'running'].includes(b.status));
+    if (!isStillRunning) {
+      stopPolling();
+    }
+  }, 5000); // Poll every 5 seconds
+}
+
+function stopPolling() {
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+  }
 }
 
 const formatSummaryValue = (key, value) => {
@@ -410,6 +463,7 @@ const formatSummaryValue = (key, value) => {
 const closeReportModal = () => {
   showBacktestReport.value = false;
   dashboardStore.setBacktestResult(null);
+  disconnectWebSocket();
   if (backtestChart) {
     backtestChart.dispose();
     backtestChart = null;
@@ -419,8 +473,13 @@ const closeReportModal = () => {
 // --- Watchers ---
 watch(pnlHistory, (newHistory) => {
   if (pnlChart) {
-    const chartData = newHistory.map(item => [item.timestamp * 1000, item.pnl]);
-    pnlChart.setOption({ series: [{ data: chartData }] });
+    // Backend sends `date` string, not `timestamp`. ECharts time axis handles Date objects.
+    const chartData = newHistory.map(item => [new Date(item.date), item.pnl]);
+    pnlChart.setOption({
+      series: [{
+        data: chartData
+      }]
+    });
   }
 }, { deep: true });
 
@@ -468,21 +527,23 @@ watch(showEditModal, (newValue) => {
   }
 });
 
+watch(showHistoryModal, (newValue) => {
+  if (!newValue) {
+    stopPolling();
+  }
+});
+
 // --- Lifecycle Hooks ---
 onMounted(() => {
   dashboardStore.clearData();
   fetchStrategies();
   initPnlChart();
-  connectWebSocket(
-    () => { wsStatus.value = 'connected'; message.success("实时通道已连接") },
-    () => { wsStatus.value = 'disconnected'; message.warning("实时通道已断开") },
-    () => { wsStatus.value = 'error'; message.error("实时通道连接失败") }
-  );
   window.addEventListener('resize', () => pnlChart?.resize());
 });
 
 onUnmounted(() => {
   disconnectWebSocket();
+  stopPolling();
   pnlChart?.dispose();
   backtestChart?.dispose();
   if (monacoInstance) monacoInstance.dispose();

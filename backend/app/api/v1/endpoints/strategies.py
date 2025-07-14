@@ -6,15 +6,15 @@ import asyncio
 from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
+from pathlib import Path
 
 from app.api import deps
 import app.crud.crud_strategy as crud
 import app.crud.crud_backtest as crud_backtest
 from app.schemas.strategy import Strategy, StrategyCreate, StrategyUpdate, StrategyInDB
-from app.schemas.backtest import BacktestRequest, KlineDuration, BacktestResultInDB, BacktestResultInfo
+from app.schemas.backtest import BacktestRequest, KlineDuration, BacktestResultInDB, BacktestResultInfo, BacktestResultCreate, BacktestRunResponse
 from app.services.websocket_manager import manager
-# --- 新增导入 ---
-from app.services.backtester import run_backtest_for_strategy
+from app.tasks import run_backtest_task
 from app.services.mock_tq_runner import start_strategy_runner, stop_strategy_runner
 
 router = APIRouter()
@@ -82,10 +82,10 @@ def get_strategy_script(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
     
     try:
-        with open(db_strategy.script_path, "r") as f:
+        with open(db_strategy.script_path, "r", encoding="utf-8") as f:
             script_content = f.read()
-    except (FileNotFoundError, TypeError):
-        # 如果文件找不到或路径无效，返回空字符串或默认代码
+    except (FileNotFoundError, TypeError, AttributeError):
+        # If the file is not found or the path is invalid, return default code
         script_content = "# Strategy script not found or path is invalid."
     
     return {"script_content": script_content}
@@ -128,77 +128,34 @@ async def stop_strategy(
     db_strategy.status = "stopped"
     return db_strategy
 
-# --- 新的回测实现 ---
-async def run_backtest_and_notify(strategy_id: int, symbol: str, duration: KlineDuration, start_dt: str, end_dt: str):
-    """
-    执行回测并通过WebSocket发送结果的后台任务
-    """
-    print(f"Starting backtest for strategy {strategy_id} on {symbol} ({duration.value}) from {start_dt} to {end_dt}")
-    
-    # Create a new database session for this background task
-    db = next(deps.get_db())
-    
-    try:
-        # 从数据库获取策略实体
-        db_strategy = crud.get_strategy(db, strategy_id=strategy_id)
-        if not db_strategy:
-            raise FileNotFoundError("Strategy not found in database.")
-        
-        # 读取策略代码文件内容
-        with open(db_strategy.script_path, "r") as f:
-            strategy_code = f.read()
-
-        # 运行回测
-        result = await asyncio.to_thread(
-            run_backtest_for_strategy,
-            db, 
-            strategy_id, 
-            strategy_code,
-            symbol,
-            duration,
-            start_dt, 
-            end_dt
-        )
-
-        message = {"type": "backtest_result", "data": result}
-        await manager.broadcast(message)
-        print(f"Backtest for strategy {strategy_id} completed and results sent.")
-    except Exception as e:
-        print(f"An error occurred during backtest for strategy {strategy_id}: {e}")
-        error_message = {"type": "backtest_result", "data": {"strategy_id": strategy_id, "summary": {"error": str(e)}}}
-        await manager.broadcast(error_message)
-    finally:
-        db.close()
-
-@router.post("/{strategy_id}/backtest")
-async def backtest_strategy(
+@router.post("/{strategy_id}/backtest", response_model=BacktestRunResponse)
+def create_backtest_record(
     strategy_id: int,
     backtest_in: BacktestRequest,
-    background_tasks: BackgroundTasks,
+    db: Session = Depends(deps.get_db),
     current_user: dict = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db)
 ):
-    """使用新的回测服务运行策略回测"""
-    db_strategy = crud.get_strategy(db, strategy_id=strategy_id)
-    if not db_strategy:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
-    if db_strategy.owner != current_user["username"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
-    if running_strategies.get(strategy_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot backtest a running strategy")
+    """
+    Creates a backtest record in the database. The actual backtest is triggered via WebSocket.
+    """
+    strategy = crud.get_strategy(db, strategy_id=strategy_id)
+    if not strategy or strategy.owner != current_user["username"]:
+        raise HTTPException(status_code=403, detail="Not enough permissions for this strategy")
 
-    # 将耗时的回测任务添加到后台
-    background_tasks.add_task(
-        run_backtest_and_notify,
-        strategy_id,
-        backtest_in.symbol,
-        backtest_in.duration,
-        backtest_in.start_dt.isoformat(),
-        backtest_in.end_dt.isoformat()
+    backtest_record_in = BacktestResultCreate(
+        strategy_id=strategy_id,
+        symbol=backtest_in.symbol,
+        duration=backtest_in.duration,
+        start_dt=backtest_in.start_dt,
+        end_dt=backtest_in.end_dt,
+        status="PENDING"
     )
-    
-    # 立即返回，告知前端任务已启动
-    return {"message": "Backtest started in the background. Results will be sent via WebSocket."}
+    backtest_record = crud_backtest.create_backtest_result(db, obj_in=backtest_record_in)
+
+    # The task is no longer started here. It will be triggered by a WebSocket message.
+    # We return the ID so the client knows which WebSocket to connect to.
+    return {"task_id": None, "backtest_id": backtest_record.id}
+
 
 @router.get("/{strategy_id}/backtests", response_model=List[BacktestResultInfo])
 def get_strategy_backtest_history(
