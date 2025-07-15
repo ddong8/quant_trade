@@ -30,44 +30,48 @@ def startup_event():
     print("--- Running startup script: Verifying strategy files ---")
 
     # 1. Define the demo strategy details
-    demo_strategy_name = "Simple MA Cross"
-    demo_strategy_description = "A simple moving average cross strategy."
-    demo_strategy_script = """# 这是一个简单的双均线策略示例
-# 当短期均线（如5日线）上穿长期均线（如20日线）时，做多
-# 当短期均线下穿长期均线时，平仓
+    demo_strategy_name = "MA Crossover Strategy"
+    demo_strategy_description = "A simple moving average crossover strategy compatible with the backtester."
+    demo_strategy_script = """
+import pandas as pd
 
-def initialize(context):
-    # 设置策略参数
-    context.short_ma = 5
-    context.long_ma = 20
-    context.symbol = 'SHFE.rb2501' # 订阅的合约
-    context.amount = 1 # 每次下单手数
+def run_strategy(data: pd.DataFrame):
+    '''
+    A simple moving average crossover strategy.
 
-    # 订阅行情
-    context.subscribe(context.symbol)
+    Args:
+        data: A pandas DataFrame with columns ['date', 'open', 'high', 'low', 'close', 'volume'].
 
-def handle_data(context, data):
-    # 获取历史数据
-    hist = context.history(context.symbol, 'close', context.long_ma + 1, '1d')
-    if hist is None or len(hist) < context.long_ma:
-        return
+    Returns:
+        A list of dictionaries, where each dictionary represents a signal.
+        e.g., [{'date': '2023-01-10', 'signal': 'buy'}, {'date': '2023-02-20', 'signal': 'sell'}]
+    '''
+    # --- Strategy Parameters ---
+    short_window = 20
+    long_window = 50
 
-    # 计算均线
-    short_ma = hist[-context.short_ma:].mean()
-    long_ma = hist[-context.long_ma:].mean()
+    # --- Signal Generation ---
+    signals = []
+    
+    # Calculate moving averages
+    data['short_mavg'] = data['close'].rolling(window=short_window, min_periods=1, center=False).mean()
+    data['long_mavg'] = data['close'].rolling(window=long_window, min_periods=1, center=False).mean()
 
-    # 获取当前持仓
-    position = context.get_position(context.symbol)
+    # Create signals
+    data['signal'] = 0.0
+    # Generate signal when short MA crosses above long MA
+    data['signal'][short_window:] = (data['short_mavg'][short_window:] > data['long_mavg'][short_window:]).astype(float)
 
-    # 金叉：短期均线上穿长期均线
-    if short_ma > long_ma and position is None:
-        print(f"金叉形成，在价格 {data.close} 买入")
-        context.buy(context.symbol, context.amount)
+    # Generate trading orders
+    data['positions'] = data['signal'].diff()
 
-    # 死叉：短期均线下穿长期均线
-    elif short_ma < long_ma and position is not None:
-        print(f"死叉形成，在价格 {data.close} 平仓")
-        context.sell(context.symbol, position.volume)
+    for i in range(len(data)):
+        if data['positions'][i] == 1.0:
+            signals.append({'date': data['trade_date'][i], 'signal': 'buy'})
+        elif data['positions'][i] == -1.0:
+            signals.append({'date': data['trade_date'][i], 'signal': 'sell'})
+            
+    return signals
 """
 
     # 2. Check if the demo strategy exists in the DB

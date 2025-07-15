@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from enum import Enum
 import pytz
 
@@ -40,17 +40,17 @@ class BacktestResultCreate(BacktestResultBase):
 
 # Properties to receive on update
 class BacktestResultUpdate(BaseModel):
-    task_id: str | None = None
-    status: str | None = None
-    summary: Dict[str, Any] | None = None
-    daily_pnl: List[Dict[str, Any]] | None = None
+    task_id: Optional[str] = None
+    status: Optional[str] = None
+    summary: Optional[Dict[str, Any]] = None
+    daily_pnl: Optional[List[Dict[str, Any]]] = None
 
 # Properties to return to client
 class BacktestResultInDB(BacktestResultCreate):
     id: int
     created_at: datetime
-    summary: Dict[str, Any] | None = None
-    daily_pnl: List[Dict[str, Any]] | None = None
+    summary: Optional[Dict[str, Any]] = None
+    daily_pnl: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         from_attributes = True
@@ -62,8 +62,8 @@ class BacktestResultInfo(BaseModel):
     id: int
     created_at: datetime
     status: str
-    sharpe_ratio: float | None = None
-    max_drawdown: float | None = None
+    sharpe_ratio: Optional[float] = None
+    max_drawdown: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -73,5 +73,5 @@ class BacktestResultInfo(BaseModel):
 
 
 class BacktestRunResponse(BaseModel):
-    task_id: str | None = None
+    task_id: Optional[str] = None
     backtest_id: int

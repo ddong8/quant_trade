@@ -1,78 +1,60 @@
-import axios from 'axios';
-import { useAuthStore } from '@/stores/auth';
-import router from '@/router'; // 引入 router
+// frontend/src/services/api.js
 
+import axios from 'axios';
+
+// --- apiClient for most API calls ---
 const apiClient = axios.create({
   baseURL: '/api/v1',
-  headers: {
-    'Content-Type': 'application/json',
-  },
 });
 
-// Add a request interceptor to include the token
+// Add a request interceptor to apiClient
 apiClient.interceptors.request.use(
   (config) => {
-    const authStore = useAuthStore();
-    const token = authStore.token;
+    // Directly get the token from localStorage
+    const token = localStorage.getItem('token'); 
+    
     if (token) {
-      config.headers['Authorization'] = `Bearer ${token}`;
+      // If token exists, add it to the Authorization header
+      config.headers.Authorization = `Bearer ${token}`;
     }
     return config;
   },
   (error) => {
+    // Do something with request error
     return Promise.reject(error);
   }
 );
 
-// Add a response interceptor to handle auth errors
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response && [401, 403].includes(error.response.status)) {
-      const authStore = useAuthStore();
-      authStore.logout(); // 清除 token 和用户信息
-      router.push('/login'); // 重定向到登录页
-    }
-    return Promise.reject(error);
-  }
-);
 
+// --- authApiClient for login ---
+// This is used ONLY for the login call, which has a different path and content type
+const authApiClient = axios.create({
+    baseURL: '/',
+});
 
 export default {
-  // Auth
-  login(credentials) {
-    const params = new URLSearchParams();
-    params.append('username', credentials.username);
-    params.append('password', credentials.password);
-    return apiClient.post('/login/access-token', params, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
-  },
+    // --- API methods using apiClient (will have token automatically) ---
+    getStrategies() { return apiClient.get('/strategies/'); },
+    createStrategy(data) { return apiClient.post('/strategies/', data); },
+    updateStrategy(id, data) { return apiClient.put(`/strategies/${id}`, data); },
+    getStrategyScript(id) { return apiClient.get(`/strategies/${id}/script`); },
+    deleteStrategy(id) { return apiClient.delete(`/strategies/${id}`); },
+    startStrategy(id) { return apiClient.post(`/strategies/${id}/start`); },
+    stopStrategy(id) { return apiClient.post(`/strategies/${id}/stop`); },
+    runBacktest(strategyId, params) { return apiClient.post(`/backtests/run/${strategyId}`, params); },
+    getBacktestHistory(strategyId) { return apiClient.get(`/backtests/history/${strategyId}`); },
+    getBacktestReport(backtestId) { return apiClient.get(`/backtests/${backtestId}`); },
 
-  // Strategies
-  get(path) {
-    return apiClient.get(path);
-  },
-  post(path, data) {
-    return apiClient.post(path, data);
-  },
-  put(path, data) {
-    return apiClient.put(path, data);
-  },
-  delete(path) {
-    return apiClient.delete(path);
-  },
-
-  // Backtesting
-  runBacktest(strategyId, params) {
-    return apiClient.post(`/strategies/${strategyId}/backtest`, params);
-  },
-  getBacktestHistoryForStrategy(strategyId) {
-    return apiClient.get(`/backtests/history/${strategyId}`);
-  },
-  getBacktestReport(backtestId) {
-    return apiClient.get(`/backtests/${backtestId}`);
-  }
+    // --- Login method using apiClient ---
+    login(credentials) {
+        const params = new URLSearchParams();
+        params.append('username', credentials.username);
+        params.append('password', credentials.password);
+        
+        return apiClient.post('/login/access-token', params, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+        });
+    }
 };

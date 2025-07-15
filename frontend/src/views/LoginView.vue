@@ -1,12 +1,13 @@
+<!-- frontend/src/views/LoginView.vue -->
 <template>
   <div class="login-container">
     <n-card class="login-card" title="量化交易系统登录">
       <n-form @submit.prevent="handleLogin">
         <n-form-item-row label="用户名">
-          <n-input v-model:value="username" placeholder="输入任意用户名" />
+          <n-input v-model:value="username" placeholder="输入 'admin'" />
         </n-form-item-row>
         <n-form-item-row label="密码">
-          <n-input type="password" v-model:value="password" placeholder="输入任意密码" show-password-on="click" />
+          <n-input type="password" v-model:value="password" placeholder="输入 'password'" show-password-on="click" />
         </n-form-item-row>
         <n-button type="primary" block strong attr-type="submit" :loading="loading">
           登 录
@@ -35,9 +36,10 @@ const handleLogin = async () => {
   loading.value = true;
   try {
     await authStore.login({ username: username.value, password: password.value });
-    // 登录成功后会自动跳转，不需要在这里 message.success
+    // 登录成功后会自动跳转，由store处理
   } catch (error) {
-    message.error('登录失败：用户名或密码错误');
+    message.error('登录失败：用户名或密码错误，或后端服务未连接');
+    console.error(error);
   } finally {
     loading.value = false;
   }

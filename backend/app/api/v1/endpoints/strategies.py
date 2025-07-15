@@ -128,51 +128,6 @@ async def stop_strategy(
     db_strategy.status = "stopped"
     return db_strategy
 
-@router.post("/{strategy_id}/backtest", response_model=BacktestRunResponse)
-def create_backtest_record(
-    strategy_id: int,
-    backtest_in: BacktestRequest,
-    db: Session = Depends(deps.get_db),
-    current_user: dict = Depends(deps.get_current_user),
-):
-    """
-    Creates a backtest record in the database. The actual backtest is triggered via WebSocket.
-    """
-    strategy = crud.get_strategy(db, strategy_id=strategy_id)
-    if not strategy or strategy.owner != current_user["username"]:
-        raise HTTPException(status_code=403, detail="Not enough permissions for this strategy")
-
-    backtest_record_in = BacktestResultCreate(
-        strategy_id=strategy_id,
-        symbol=backtest_in.symbol,
-        duration=backtest_in.duration,
-        start_dt=backtest_in.start_dt,
-        end_dt=backtest_in.end_dt,
-        status="PENDING"
-    )
-    backtest_record = crud_backtest.create_backtest_result(db, obj_in=backtest_record_in)
-
-    # The task is no longer started here. It will be triggered by a WebSocket message.
-    # We return the ID so the client knows which WebSocket to connect to.
-    return {"task_id": None, "backtest_id": backtest_record.id}
-
-
-@router.get("/{strategy_id}/backtests", response_model=List[BacktestResultInfo])
-def get_strategy_backtest_history(
-    strategy_id: int,
-    db: Session = Depends(deps.get_db),
-    current_user: dict = Depends(deps.get_current_user),
-):
-    db_strategy = crud.get_strategy(db, strategy_id=strategy_id)
-    if not db_strategy:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Strategy not found")
-    if db_strategy.owner != current_user["username"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
-    
-    results = crud_backtest.get_backtest_results_by_strategy(db, strategy_id=strategy_id)
-    return results
-
-
 
 @router.delete("/{strategy_id}", response_model=Strategy)
 def delete_strategy(

@@ -8,13 +8,13 @@ WORKDIR /app
 
 # 安装依赖
 COPY ./backend/requirements.txt /app/
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
 # 复制后端代码
-COPY ./backend /app
+# COPY ./backend /app # This line is redundant due to the volume mount in docker-compose.yml
 
 # 暴露端口
 EXPOSE 8000
 
 # 启动命令
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "start.py"]

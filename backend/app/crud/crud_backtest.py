@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 from app.models.backtest import BacktestResult
 from app.schemas.backtest import BacktestResultCreate, BacktestResultUpdate
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 def create_backtest_result(db: Session, *, obj_in: BacktestResultCreate) -> BacktestResult:
     db_obj = BacktestResult(
@@ -17,7 +17,7 @@ def create_backtest_result(db: Session, *, obj_in: BacktestResultCreate) -> Back
     db.refresh(db_obj)
     return db_obj
 
-def update_backtest_result(db: Session, *, db_obj: BacktestResult, obj_in: BacktestResultUpdate | Dict[str, Any]) -> BacktestResult:
+def update_backtest_result(db: Session, *, db_obj: BacktestResult, obj_in: Union[BacktestResultUpdate, Dict[str, Any]]) -> BacktestResult:
     if isinstance(obj_in, dict):
         update_data = obj_in
     else:

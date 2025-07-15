@@ -3,6 +3,7 @@ import pandas as pd
 from tqsdk import TqApi, TqAuth
 from datetime import datetime
 from app.schemas.backtest import KlineDuration
+from app.core.config import TQ_USER, TQ_PASSWORD
 
 class DataService:
     def get_kline_data(self, symbol: str, duration: KlineDuration, start_date: str, end_date: str) -> pd.DataFrame:
@@ -15,7 +16,7 @@ class DataService:
         :return: pandas DataFrame, 包含开高低收等数据
         """
         # 在函数内部创建和关闭TqApi实例，确保线程安全
-        api = TqApi(auth=TqAuth("ddong8","dhx.520"))
+        api = TqApi(auth=TqAuth(TQ_USER, TQ_PASSWORD))
         try:
             duration_map = {
                 "1d": 24 * 60 * 60,

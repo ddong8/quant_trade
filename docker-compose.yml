@@ -2,6 +2,7 @@ version: '3.8'
 
 volumes:
   strategies_code_vol:
+  quant_trade_db_vol:
 
 services:
   redis:
@@ -18,12 +19,15 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DATABASE_URL=sqlite:///./quant_trade.db
+      - DATABASE_URL=sqlite:///./data/quant_trade.db
+      - TQ_USER=${TQ_USER}
+      - TQ_PASSWORD=${TQ_PASSWORD}
     depends_on:
       - redis
     volumes:
       - ./backend:/app
       - strategies_code_vol:/strategies_code
+      - quant_trade_db_vol:/app/data
 
   frontend:
     build:
@@ -38,14 +42,19 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: celery -A app.celery_app worker --loglevel=info
+    working_dir: /app/app
+    command: celery -A celery_app worker --loglevel=info --uid=nobody
     environment:
+      - PYTHONPATH=/app
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DATABASE_URL=sqlite:///./quant_trade.db
+      - DATABASE_URL=sqlite:///./data/quant_trade.db
+      - TQ_USER=${TQ_USER}
+      - TQ_PASSWORD=${TQ_PASSWORD}
     depends_on:
       - redis
     volumes:
       - ./backend:/app
       - strategies_code_vol:/strategies_code
+      - quant_trade_db_vol:/app/data
 

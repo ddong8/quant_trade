@@ -177,6 +177,7 @@ let backtestChart = null;
 
 // --- Computed Properties ---
 const logText = computed(() => logs.value.join('\n'));
+// const pnlHistory = computed(() => dashboardStore.pnlHistory); // 保持对store的计算属性引用
 const latestPnl = computed(() => pnlHistory.value.length > 0 ? pnlHistory.value[pnlHistory.value.length - 1].pnl : 0);
 const wsStatusTitle = computed(() => ({
   connected: "实时通道已连接",
@@ -210,7 +211,7 @@ const historyColumns = [
                 {
                     size: 'small',
                     onClick: () => showReportFromHistory(row.id),
-                    disabled: row.status !== 'completed'
+                    disabled: row.status !== 'SUCCESS'
                 },
                 { default: () => '查看报告' }
             );
@@ -253,7 +254,7 @@ const renderBacktestChart = (result) => {
 // --- CRUD Functions ---
 async function fetchStrategies() {
   try {
-    const { data } = await api.get('/strategies/');
+    const { data } = await api.getStrategies();
     strategies.value = data;
   } catch (error) {
     message.error('加载策略列表失败');
@@ -262,15 +263,12 @@ async function fetchStrategies() {
 
 async function handleCreateStrategy() {
   try {
-    // Now we only need to send name and description.
-    // The backend will handle the creation of the default script.
-    const { data: newStrategy } = await api.post('/strategies/', newStrategyData);
+    const { data: newStrategy } = await api.createStrategy(newStrategyData);
     message.success('策略创建成功');
     showCreateModal.value = false;
     newStrategyData.name = '';
     newStrategyData.description = '';
     await fetchStrategies();
-    // Automatically open the editor for the newly created strategy
     const strategyToEdit = strategies.value.find(s => s.id === newStrategy.id);
     if (strategyToEdit) {
       openEditModal(strategyToEdit);
@@ -283,11 +281,10 @@ async function handleCreateStrategy() {
 function openEditModal(strategy) {
   activeStrategy.value = strategy;
   editStrategyData.id = strategy.id;
-  // Set a placeholder while loading
   editStrategyData.code = '// Loading...';
   showEditModal.value = true;
 
-  api.get(`/strategies/${strategy.id}/script`).then(response => {
+  api.getStrategyScript(strategy.id).then(response => {
     editStrategyData.code = response.data.script_content || `// Code for ${strategy.name}`;
     nextTick(() => {
       if (editorContainer.value) {
@@ -309,7 +306,7 @@ async function handleUpdateStrategy() {
   if (!monacoInstance) return;
   const newCode = monacoInstance.getValue();
   try {
-    await api.put(`/strategies/${editStrategyData.id}`, { script_content: newCode });
+    await api.updateStrategy(editStrategyData.id, { script_content: newCode });
     message.success('代码保存成功');
     showEditModal.value = false;
   } catch (error) {
@@ -319,7 +316,7 @@ async function handleUpdateStrategy() {
 
 async function runStrategy(id) {
   try {
-    await api.post(`/strategies/${id}/start`);
+    await api.startStrategy(id);
     message.success('策略已启动');
     fetchStrategies();
   }
@@ -330,7 +327,7 @@ async function runStrategy(id) {
 
 async function stopStrategy(id) {
   try {
-    await api.post(`/strategies/${id}/stop`);
+    await api.stopStrategy(id);
     message.success('策略已停止');
     backtesting_ids.value.delete(id);
     disconnectWebSocket();
@@ -348,7 +345,7 @@ function deleteStrategy(id) {
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        await api.delete(`/strategies/${id}`);
+        await api.deleteStrategy(id);
         message.success('策略已删除');
         fetchStrategies();
       } catch (error) {
@@ -372,6 +369,7 @@ import { sendWebSocketMessage } from '@/services/websocket';
 
 async function handleRunBacktest() {
   try {
+    dashboardStore.clearData(); // 清空上次回测的日志和数据
     const params = {
       symbol: backtestParams.symbol,
       duration: backtestParams.duration,
@@ -379,51 +377,66 @@ async function handleRunBacktest() {
       end_dt: new Date(backtestParams.end_date).toISOString(),
     };
 
-    // 1. Create the backtest record and get the ID
-    const response = await dashboardStore.runBacktest(backtestParams.strategy_id, params);
+    // 1. 直接调用API，后端将创建记录并启动Celery任务
+    const { data } = await api.runBacktest(backtestParams.strategy_id, params);
     const backtestId = response.backtest_id;
 
-    message.success(`回测记录已创建 (ID: ${backtestId})`);
+    message.info(`回测任务已启动 (ID: ${backtestId})，等待实时数据...`);
     backtesting_ids.value.add(backtestParams.strategy_id);
     showBacktestModal.value = false;
 
-    // 2. Connect to the WebSocket
+    // 2. 连接WebSocket以接收实时进度
     connectWebSocket(
       backtestId,
-      () => { // onOpen
-        wsStatus.value = 'connected';
-        message.success("实时通道已连接，准备开始回测...");
-        // 3. Send the start message
-        sendWebSocketMessage({ action: 'start' });
-      },
+      () => { wsStatus.value = 'connected'; }, // onOpen
       () => { // onClose
-        wsStatus.value = 'disconnected';
-        message.warning("实时通道已断开");
+          wsStatus.value = 'disconnected';
+          backtesting_ids.value.delete(backtestParams.strategy_id);
+          fetchStrategies(); // 刷新策略状态
       },
-      () => { // onError
-        wsStatus.value = 'error';
-        message.error("实时通道连接失败");
-      }
+      () => { wsStatus.value = 'error'; } // onError
     );
 
   } catch (error) {
-    message.error('启动回测失败');
+    const errorMsg = error.response?.data?.detail || '启动回测失败';
+    message.error(errorMsg);
+    backtesting_ids.value.delete(backtestParams.strategy_id);
   }
 }
 
 async function openHistoryModal(strategy) {
     activeStrategy.value = strategy;
-    await dashboardStore.fetchBacktestHistory(strategy.id);
     showHistoryModal.value = true;
-    startPolling(strategy.id);
+    await fetchHistoryAndStartPolling(strategy.id);
+}
+
+async function fetchHistoryAndStartPolling(strategyId) {
+    try {
+        const { data } = await api.getBacktestHistory(strategyId);
+        backtestHistory.value = data;
+
+        const isAnyRunning = data.some(b => ['PENDING', 'RUNNING'].includes(b.status));
+        
+        if (isAnyRunning && !pollingInterval) {
+            // 如果有正在运行的任务且没有轮询器，则启动
+            startPolling(strategyId);
+        } else if (!isAnyRunning && pollingInterval) {
+            // 如果没有正在运行的任务但轮询器还在，则停止
+            stopPolling();
+        }
+
+    } catch (error) {
+        message.error('加载历史报告失败');
+        stopPolling();
+    }
 }
 
 async function showReportFromHistory(backtestId) {
     try {
         const { data } = await api.getBacktestReport(backtestId);
         dashboardStore.setBacktestResult(data);
-        showHistoryModal.value = false; // Close history modal
-        showBacktestReport.value = true; // Show the main report modal
+        showHistoryModal.value = false; // 关闭历史记录弹窗
+        showBacktestReport.value = true; // 显示报告弹窗
         nextTick(() => renderBacktestChart(data));
     } catch (error) {
         message.error('加载报告详情失败');
@@ -431,16 +444,10 @@ async function showReportFromHistory(backtestId) {
 }
 
 function startPolling(strategyId) {
-  if (pollingInterval) {
-    clearInterval(pollingInterval);
-  }
-  pollingInterval = setInterval(async () => {
-    await dashboardStore.fetchBacktestHistory(strategyId);
-    const isStillRunning = backtestHistory.value.some(b => ['pending', 'running'].includes(b.status));
-    if (!isStillRunning) {
-      stopPolling();
-    }
-  }, 5000); // Poll every 5 seconds
+  stopPolling(); // 先确保旧的已停止
+  pollingInterval = setInterval(() => {
+    fetchHistoryAndStartPolling(strategyId);
+  }, 5000);
 }
 
 function stopPolling() {
