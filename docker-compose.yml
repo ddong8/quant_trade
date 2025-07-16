@@ -2,7 +2,7 @@ version: '3.8'
 
 volumes:
   strategies_code_vol:
-  quant_trade_db_vol:
+  postgres_data_vol:
 
 services:
   redis:
@@ -10,24 +10,40 @@ services:
     ports:
       - "6379:6379"
 
+  postgres:
+    image: postgres:13-alpine
+    volumes:
+      - postgres_data_vol:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    # 【修正】: 启动命令明确化，并开启热重载
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DATABASE_URL=sqlite:///./data/quant_trade.db
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - TQ_USER=${TQ_USER}
       - TQ_PASSWORD=${TQ_PASSWORD}
     depends_on:
       - redis
+      - postgres
     volumes:
+      # 在开发时，我们仍然挂载代码以实现热重载
       - ./backend:/app
       - strategies_code_vol:/strategies_code
-      - quant_trade_db_vol:/app/data
 
   frontend:
     build:
@@ -42,19 +58,33 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    working_dir: /app/app
-    command: celery -A celery_app worker --loglevel=info --uid=nobody
+    env_file:
+      - .env
+    # 【修正】: 统一工作目录和启动命令
+    working_dir: /app
+    command: celery -A app.celery_app worker --loglevel=info
     environment:
-      - PYTHONPATH=/app
+      # PYTHONPATH不再需要，因为工作目录就是 /app
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DATABASE_URL=sqlite:///./data/quant_trade.db
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - TQ_USER=${TQ_USER}
       - TQ_PASSWORD=${TQ_PASSWORD}
     depends_on:
       - redis
+      - postgres
     volumes:
+      # worker也需要挂载代码，以确保开发时能看到最新的代码改动
       - ./backend:/app
       - strategies_code_vol:/strategies_code
-      - quant_trade_db_vol:/app/data
 
+  flower:
+    image: mher/flower
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+    depends_on:
+      - redis
+      - worker

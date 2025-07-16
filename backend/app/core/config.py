@@ -9,15 +9,13 @@ load_dotenv()
 # JWT 设置
 # 警告: 在生产环境中，绝不要硬编码密钥！
 # 应该从环境变量或安全的配置服务中读取。
-SECRET_KEY = "a-very-secret-key-for-jwt-that-should-be-long-and-random"
+SECRET_KEY = os.getenv("SECRET_KEY", "a-very-secret-key-for-jwt-that-should-be-long-and-random")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Token有效期：24小时
 
 # 数据库设置
 # 优先从环境变量读取DATABASE_URL，否则使用本地的SQLite数据库
-backend_dir = Path(__file__).parent.parent.parent
-db_path = backend_dir / "data" / "quant_trade.db"
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{db_path}")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 # Tushare API Token

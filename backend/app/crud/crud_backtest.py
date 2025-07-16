@@ -1,3 +1,4 @@
+# backend/app/crud/crud_backtest.py
 from sqlalchemy.orm import Session
 from app.models.backtest import BacktestResult
 from app.schemas.backtest import BacktestResultCreate, BacktestResultUpdate
@@ -44,6 +45,7 @@ def get_backtest_results_by_strategy(db: Session, strategy_id: int, skip: int = 
             "id": result.id,
             "created_at": result.created_at,
             "status": result.status,
+            "summary": summary, # 返回完整的summary
             "sharpe_ratio": summary.get("sharpe_ratio"),
             "max_drawdown": summary.get("max_drawdown"),
         })

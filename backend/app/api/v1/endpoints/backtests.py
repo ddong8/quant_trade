@@ -10,10 +10,11 @@ from app.schemas.backtest import (
     BacktestRequest,
     BacktestResultInDB,
     BacktestResultCreate,
+    OptimizationParameter,
     BacktestRunResponse,
     BacktestResultInfo,
 )
-from app.tasks import run_backtest_task
+from app.tasks import run_backtest_task, run_optimization_task
 
 router = APIRouter()
 
@@ -26,14 +27,11 @@ def run_backtest(
 ):
     """
     Run a new backtest for a given strategy.
-    This will create a backtest record and dispatch a Celery task.
     """
-    # 1. Verify strategy ownership
     strategy = crud_strategy.get_strategy(db, strategy_id=strategy_id)
     if not strategy or strategy.owner != current_user["username"]:
         raise HTTPException(status_code=403, detail="Not enough permissions for this strategy")
 
-    # 2. Create an initial backtest record in the DB
     backtest_create = BacktestResultCreate(
         strategy_id=strategy_id,
         symbol=backtest_in.symbol,
@@ -44,10 +42,9 @@ def run_backtest(
     )
     db_backtest = crud_backtest.create_backtest_result(db, obj_in=backtest_create)
 
-    # 3. Dispatch the Celery task
+    # 【修正】: 只传递 backtest_id，让任务自己从数据库加载详情
     task = run_backtest_task.delay(db_backtest.id)
 
-    # 4. Update the record with the task ID
     crud_backtest.update_backtest_result(db, db_obj=db_backtest, obj_in={"task_id": task.id})
 
     return {
@@ -55,6 +52,37 @@ def run_backtest(
         "backtest_id": db_backtest.id,
         "status": "PENDING"
     }
+
+@router.post("/optimize/{strategy_id}", response_model=dict)
+def run_optimization(
+    strategy_id: int,
+    backtest_in: BacktestRequest,
+    optim_params: List[OptimizationParameter] = Body(...),
+    db: Session = Depends(deps.get_db),
+    current_user: dict = Depends(deps.get_current_user),
+):
+    """
+    Run a new parameter optimization for a given strategy.
+    """
+    strategy = crud_strategy.get_strategy(db, strategy_id=strategy_id)
+    if not strategy or strategy.owner != current_user["username"]:
+        raise HTTPException(status_code=403, detail="Not enough permissions for this strategy")
+
+    # 【修正】: 将 datetime 对象转换为 ISO 格式的字符串，确保可序列化
+    serializable_backtest_params = {
+        "symbol": backtest_in.symbol,
+        "duration": backtest_in.duration.value, # 传递枚举的值
+        "start_dt_iso": backtest_in.start_dt.isoformat(),
+        "end_dt_iso": backtest_in.end_dt.isoformat(),
+    }
+
+    run_optimization_task.delay(
+        strategy_id=strategy_id,
+        backtest_params=serializable_backtest_params,
+        optimization_params=[p.model_dump() for p in optim_params]
+    )
+
+    return {"message": "Optimization task has been dispatched."}
 
 
 @router.get("/history/{strategy_id}", response_model=List[BacktestResultInfo])
@@ -65,10 +93,6 @@ def get_backtest_history_for_strategy(
     skip: int = 0,
     limit: int = 100,
 ):
-    """
-    Get the history of backtests for a specific strategy.
-    """
-    # Verify strategy ownership
     strategy = crud_strategy.get_strategy(db, strategy_id=strategy_id)
     if not strategy or strategy.owner != current_user["username"]:
         raise HTTPException(status_code=403, detail="Not enough permissions for this strategy")
@@ -89,7 +113,6 @@ def get_backtest_report(
     if not db_result:
         raise HTTPException(status_code=404, detail="Backtest result not found")
 
-    # Check ownership
     db_strategy = crud_strategy.get_strategy(db, strategy_id=db_result.strategy_id)
     if not db_strategy or db_strategy.owner != current_user["username"]:
         raise HTTPException(status_code=403, detail="Not enough permissions")

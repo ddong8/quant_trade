@@ -10,7 +10,10 @@ celery_app = Celery(
     include=["app.tasks"]  # 指定包含任务的模块
 )
 
-# 可选的Celery配置
+# 【重要】: 明确配置序列化器
 celery_app.conf.update(
     task_track_started=True,
+    task_serializer='json',
+    result_serializer='json',
+    accept_content=['json'],
 )

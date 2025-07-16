@@ -1,12 +1,15 @@
+# backend/app/schemas/strategy.py
 from pydantic import BaseModel
 from typing import Optional, List
 from .backtest import BacktestResultInfo
 
-# Schema for receiving script content from the user
-class StrategyCreate(BaseModel):
+# --- 修改: 将脚本内容和参数分开 ---
+class StrategyScript(BaseModel):
+    content: str
+
+class StrategyCreate(StrategyScript):
     name: str
     description: Optional[str] = None
-    script_content: Optional[str] = None
 
 # Base schema for database and API responses
 class StrategyBase(BaseModel):

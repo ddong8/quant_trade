@@ -1,60 +1,73 @@
-import { useDashboardStore } from '@/stores/dashboard'
+// frontend/src/services/websocket.js
+import { useDashboardStore } from '@/stores/dashboard';
 
-let socket = null
+let ws = null;
 
-export function connectWebSocket(backtestId, onOpen, onClose, onError) {
-  const dashboardStore = useDashboardStore()
-  const WS_URL = `ws://localhost:8000/api/v1/ws/backtest/${backtestId}`;
-  
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    console.log("WebSocket is already connected.");
+function connectWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    console.log('WebSocket is already connected.');
     return;
   }
   
-  socket = new WebSocket(WS_URL)
+  const url = `ws://localhost:8000/api/v1/ws/`;
+  ws = new WebSocket(url);
 
-  socket.onopen = () => {
-    console.log('WebSocket Connected')
-    if (onOpen) onOpen()
-  }
+  ws.onopen = () => {
+    console.log(`Global WebSocket connected.`);
+  };
 
-  socket.onmessage = (event) => {
-    const message = JSON.parse(event.data)
-    if (message.type === 'pnl_update') {
-      dashboardStore.addPnlData(message.data)
-    } else if (message.type === 'log') {
-      dashboardStore.addLog(message.data)
-    } else if (message.type === 'backtest_result') {
-      dashboardStore.setBacktestResult(message.data)
-    } else if (message.type === 'account_update') {
-      dashboardStore.setAccountEquity(message.data.equity)
-    } else if (message.type === 'order_event') {
-      dashboardStore.addOrderEvent(message.data)
-    }
-  }
+  ws.onmessage = handleMessage;
 
-  socket.onclose = () => {
-    console.log('WebSocket Disconnected')
-    if (onClose) onClose()
-    socket = null
-  }
-  
-  socket.onerror = (error) => {
-    console.error('WebSocket Error:', error)
-    if (onError) onError(error)
+  ws.onclose = () => {
+    console.log('Global WebSocket disconnected. Attempting to reconnect in 5 seconds...');
+    ws = null;
+    setTimeout(connectWebSocket, 5000);
+  };
+
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+    ws.close();
+  };
+}
+
+function handleMessage(event) {
+  const dashboardStore = useDashboardStore();
+  const message = JSON.parse(event.data);
+  switch (message.type) {
+    case 'log':
+      dashboardStore.addLog(`[${new Date(message.data.timestamp).toLocaleTimeString()}] ${message.data.message}`);
+      break;
+    case 'live_update':
+      dashboardStore.setLiveUpdate(message.data);
+      break;
+    case 'backtest_result': // 新增：统一处理回测结果
+      // 将交易点位存入 orderEvents，方便图表绘制
+      if(message.daily_pnl && message.daily_pnl.trades) {
+         message.daily_pnl.trades.forEach(trade => {
+            dashboardStore.addOrderEvent({
+                date: trade.date,
+                signal: trade.type,
+                price: trade.price
+            });
+         });
+         // 将数据格式修正为报告组件期望的格式
+         message.daily_pnl = message.daily_pnl.pnl;
+      }
+      dashboardStore.setBacktestResult(message);
+      break;
+    default:
+      // 其他消息类型可以忽略或打印
+      // console.log("Received unknown message type:", message.type);
+      break;
   }
 }
 
-export function sendWebSocketMessage(message) {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
-  } else {
-    console.error('WebSocket is not connected.');
+function disconnectWebSocket() {
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+    ws = null;
   }
 }
 
-export function disconnectWebSocket() {
-  if (socket) {
-    socket.close()
-  }
-}
+export { connectWebSocket, disconnectWebSocket };

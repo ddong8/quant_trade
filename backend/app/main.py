@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from app.api.v1.api import api_router
 from app.core.config import SECRET_KEY
@@ -15,99 +16,93 @@ from app.schemas.strategy import StrategyCreate
 # 在应用启动时创建数据库表
 init_db()
 
-app = FastAPI(
-    title="Quant Trading System API",
-    openapi_url="/api/v1/openapi.json"
-)
 
-@app.on_event("startup")
-def startup_event():
-    """
-    On startup, check for demo strategies and ensure their script files exist.
-    """
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- 这是应用启动时执行的逻辑 ---
+    print("--- Running startup logic via lifespan manager ---")
     db: Session = SessionLocal()
     
-    print("--- Running startup script: Verifying strategy files ---")
-
-    # 1. Define the demo strategy details
+    # 1. 定义演示策略的详细信息
     demo_strategy_name = "MA Crossover Strategy"
     demo_strategy_description = "A simple moving average crossover strategy compatible with the backtester."
-    demo_strategy_script = """
-import pandas as pd
+    demo_strategy_script = """import pandas as pd
+from app.services.strategy_base import BaseStrategy
 
-def run_strategy(data: pd.DataFrame):
-    '''
-    A simple moving average crossover strategy.
+class Strategy(BaseStrategy):
+    def set_parameters(self):
+        # 在这里声明所有可优化的参数及其默认值
+        self.short_window = 20
+        self.long_window = 50
 
-    Args:
-        data: A pandas DataFrame with columns ['date', 'open', 'high', 'low', 'close', 'volume'].
+    def initialize(self):
+        self.symbol = "SHFE.rb2501"  # 交易的合约
 
-    Returns:
-        A list of dictionaries, where each dictionary represents a signal.
-        e.g., [{'date': '2023-01-10', 'signal': 'buy'}, {'date': '2023-02-20', 'signal': 'sell'}]
-    '''
-    # --- Strategy Parameters ---
-    short_window = 20
-    long_window = 50
+    def handle_data(self, data: pd.DataFrame):
+        '''
+        Args:
+            data: 一个包含最新K线数据的 pandas DataFrame。
+                  在我们的回测器中，它包含所有历史数据。
+                  在实盘中，它可能只包含最近的N条数据。
+        '''
+        # --- 信号生成 ---
+        signals = []
+        
+        # 计算移动平均线
+        short_mavg = data['close'].rolling(window=self.short_window).mean()
+        long_mavg = data['close'].rolling(window=self.long_window).mean()
 
-    # --- Signal Generation ---
-    signals = []
-    
-    # Calculate moving averages
-    data['short_mavg'] = data['close'].rolling(window=short_window, min_periods=1, center=False).mean()
-    data['long_mavg'] = data['close'].rolling(window=long_window, min_periods=1, center=False).mean()
-
-    # Create signals
-    data['signal'] = 0.0
-    # Generate signal when short MA crosses above long MA
-    data['signal'][short_window:] = (data['short_mavg'][short_window:] > data['long_mavg'][short_window:]).astype(float)
-
-    # Generate trading orders
-    data['positions'] = data['signal'].diff()
-
-    for i in range(len(data)):
-        if data['positions'][i] == 1.0:
-            signals.append({'date': data['trade_date'][i], 'signal': 'buy'})
-        elif data['positions'][i] == -1.0:
-            signals.append({'date': data['trade_date'][i], 'signal': 'sell'})
-            
-    return signals
+        # 创建信号：当短期均线上穿长期均线时为1，下穿时为-1
+        # .iloc[-1] 获取最新值
+        if short_mavg.iloc[-1] > long_mavg.iloc[-1] and short_mavg.iloc[-2] < long_mavg.iloc[-2]:
+            return [{'date': data['trade_date'].iloc[-1], 'signal': 'buy'}]
+        elif short_mavg.iloc[-1] < long_mavg.iloc[-1] and short_mavg.iloc[-2] > long_mavg.iloc[-2]:
+            return [{'date': data['trade_date'].iloc[-1], 'signal': 'sell'}]
+        
+        return []
 """
-
-    # 2. Check if the demo strategy exists in the DB
+    # 2. 检查并创建策略
     db_strategy = crud.get_strategy_by_name(db, name=demo_strategy_name)
     
     if not db_strategy:
-        # If not, create it in the DB. The CRUD function will also create the file.
         print(f"Demo strategy '{demo_strategy_name}' not found in DB. Creating it...")
         strategy_to_create = StrategyCreate(
             name=demo_strategy_name,
             description=demo_strategy_description,
-            script_content=demo_strategy_script
+            content=demo_strategy_script
         )
         crud.create_strategy(db=db, strategy=strategy_to_create, owner="admin")
         print("Demo strategy created.")
     else:
-        # If it exists in the DB, ensure its corresponding file also exists.
         print(f"Demo strategy '{demo_strategy_name}' found in DB. Verifying file...")
         if db_strategy.script_path:
             p = Path(db_strategy.script_path)
-            if not p.exists():
-                print(f"File not found at {p}. Re-creating it...")
-                try:
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    with open(p, "w", encoding="utf-8") as f:
-                        f.write(demo_strategy_script)
-                    print("File re-created successfully.")
-                except Exception as e:
-                    print(f"Error re-creating file: {e}")
-            else:
-                print("File already exists. No action needed.")
+            # 无论文件是否存在，都用最新的代码覆盖它，以确保格式正确
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(demo_strategy_script)
+                print("Demo strategy file verified and updated.")
+            except Exception as e:
+                print(f"Error updating demo strategy file: {e}")
         else:
             print("Strategy exists in DB but has no script path. This is an inconsistent state.")
 
     db.close()
-    print("--- Startup script finished ---")
+    print("--- Startup logic finished ---")
+
+    yield
+
+    # --- 这是应用关闭时执行的逻辑 (如果需要的话) ---
+    # print("--- Running shutdown logic ---")
+
+
+# 将 lifespan 管理器注册到 FastAPI 应用
+app = FastAPI(
+    title="Quant Trading System API",
+    openapi_url="/api/v1/openapi.json",
+    lifespan=lifespan
+)
 
 
 # 设置CORS跨域资源共享

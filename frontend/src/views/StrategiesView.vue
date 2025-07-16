@@ -9,21 +9,27 @@
       <n-gi>
         <n-statistic label="账户总权益" tabular-nums>
           <template #prefix>¥</template>
-          <n-number-animation :from="0" :to="accountEquity || 0" :precision="2" />
+          {{ liveAccount.equity ? liveAccount.equity.toFixed(2) : '0.00' }}
         </n-statistic>
       </n-gi>
       <n-gi>
-        <n-statistic label="今日盈亏">
+        <n-statistic label="可用资金">
           <template #prefix>¥</template>
-          <n-number-animation :from="0" :to="latestPnl" :precision="2" />
+          {{ liveAccount.available ? liveAccount.available.toFixed(2) : '0.00' }}
+        </n-statistic>
+      </n-gi>
+      <n-gi>
+        <n-statistic :label="`持仓合约 (${livePosition.symbol || '无'})`">
+          {{ livePosition.volume || 0 }}
+        </n-statistic>
+      </n-gi>
+       <n-gi>
+        <n-statistic label="持仓均价">
+          <template #prefix>¥</template>
+          {{ livePosition.average_price ? livePosition.average_price.toFixed(2) : '0.00' }}
         </n-statistic>
       </n-gi>
     </n-grid>
-
-    <!-- 实时图表和日志 -->
-    <n-card title="实时盈亏曲线" :bordered="false">
-      <div ref="pnlChartRef" style="height: 400px;"></div>
-    </n-card>
 
     <!-- 策略管理 -->
     <n-card title="策略管理">
@@ -87,7 +93,20 @@
           </n-form-item>
         <n-form-item label="开始日期"><n-date-picker v-model:value="backtestParams.start_date" type="date" style="width: 100%;" /></n-form-item>
         <n-form-item label="结束日期"><n-date-picker v-model:value="backtestParams.end_date" type="date" style="width: 100%;" /></n-form-item>
-        <n-button type="primary" attr-type="submit" block>开始回测</n-button>
+        
+        <n-h4>参数优化</n-h4>
+        <n-p depth="3">如果要进行参数优化，请在此处添加参数。否则将使用策略文件中的默认值进行单次回测。</n-p>
+        
+        <div v-for="(param, index) in optimParams" :key="index" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+          <n-input v-model:value="param.name" placeholder="参数名" />
+          <n-input-number v-model:value="param.start" placeholder="开始值" style="min-width: 80px;" />
+          <n-input-number v-model:value="param.end" placeholder="结束值" style="min-width: 80px;" />
+          <n-input-number v-model:value="param.step" placeholder="步长" style="min-width: 80px;" />
+          <n-button @click="removeOptimParam(index)" text type="error">删除</n-button>
+        </div>
+        <n-button @click="addOptimParam" dashed block>添加优化参数</n-button>
+
+        <n-button type="primary" attr-type="submit" block style="margin-top: 24px;">开始</n-button>
       </n-form>
     </n-modal>
 
@@ -121,7 +140,7 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, reactive, nextTick, watch, computed } from 'vue';
-import { NSpace, NGrid, NGi, NCard, NTag, NButton, useMessage, NSpin, NForm, NFormItem, NInput, NEmpty, NModal, useDialog, NLog, NDatePicker, NDescriptions, NDescriptionsItem, NAlert, NStatistic, NNumberAnimation, NSelect, NDataTable } from 'naive-ui';
+import { NSpace, NGrid, NGi, NCard, NTag, NButton, useMessage, NSpin, NForm, NFormItem, NInput, NEmpty, NModal, useDialog, NLog, NDatePicker, NDescriptions, NDescriptionsItem, NAlert, NStatistic, NNumberAnimation, NSelect, NDataTable, NInputNumber, NH4, NP } from 'naive-ui';
 import * as monaco from 'monaco-editor';
 import * as echarts from 'echarts';
 import api from '@/services/api';
@@ -130,13 +149,11 @@ import { connectWebSocket, disconnectWebSocket } from '@/services/websocket';
 import { storeToRefs } from 'pinia';
 import { h } from 'vue';
 
-// --- Store and Services ---
 const message = useMessage();
 const dialog = useDialog();
 const dashboardStore = useDashboardStore();
-const { pnlHistory, logs, accountEquity, orderEvents, backtestResult, backtestHistory } = storeToRefs(dashboardStore);
+const { logs, orderEvents, backtestResult, backtestHistory, liveAccount, livePosition } = storeToRefs(dashboardStore);
 
-// --- Local State ---
 const strategies = ref([]);
 const backtesting_ids = ref(new Set());
 const showCreateModal = ref(false);
@@ -145,8 +162,8 @@ const showBacktestModal = ref(false);
 const showBacktestReport = ref(false);
 const showHistoryModal = ref(false);
 const activeStrategy = ref(null);
-const newStrategyData = reactive({ name: '', description: '' });
-const editStrategyData = reactive({ id: null, code: '' });
+const newStrategyData = reactive({ name: '', description: '', content: '' });
+const editStrategyData = reactive({ id: null, content: '' });
 const backtestParams = reactive({
   strategy_id: null,
   symbol: 'SHFE.rb2501',
@@ -154,6 +171,14 @@ const backtestParams = reactive({
   start_date: null,
   end_date: null
 });
+const optimParams = ref([]);
+
+const addOptimParam = () => {
+  optimParams.value.push({ name: '', start: 0, end: 0, step: 1 });
+};
+const removeOptimParam = (index) => {
+  optimParams.value.splice(index, 1);
+};
 
 const durationOptions = [
   { label: '日线', value: '1d' },
@@ -165,20 +190,13 @@ const durationOptions = [
 const wsStatus = ref('disconnected');
 let pollingInterval = null;
 
-// --- Monaco Editor ---
 const editorContainer = ref(null);
 let monacoInstance = null;
 
-// --- ECharts Instances ---
-const pnlChartRef = ref(null);
-let pnlChart = null;
 const backtestChartContainer = ref(null);
 let backtestChart = null;
 
-// --- Computed Properties ---
 const logText = computed(() => logs.value.join('\n'));
-// const pnlHistory = computed(() => dashboardStore.pnlHistory); // 保持对store的计算属性引用
-const latestPnl = computed(() => pnlHistory.value.length > 0 ? pnlHistory.value[pnlHistory.value.length - 1].pnl : 0);
 const wsStatusTitle = computed(() => ({
   connected: "实时通道已连接",
   disconnected: "实时通道已断开",
@@ -192,7 +210,7 @@ const wsStatusMessage = computed(() => ({
 }[wsStatus.value]));
 const statusMap = {
   stopped: { text: '已停止', type: 'default' },
-  running: { text: '运行中', type: 'success' },
+  running: { text: '模拟运行中', type: 'success' },
   error: { text: '错误', type: 'error' },
 };
 
@@ -200,8 +218,16 @@ const historyColumns = [
     { title: '回测ID', key: 'id' },
     { title: '创建时间', key: 'created_at', render: (row) => new Date(row.created_at).toLocaleString() },
     { title: '状态', key: 'status' },
-    { title: '夏普比率', key: 'sharpe_ratio', render: (row) => row.sharpe_ratio ? row.sharpe_ratio.toFixed(2) : 'N/A' },
-    { title: '最大回撤', key: 'max_drawdown', render: (row) => row.max_drawdown ? `${(row.max_drawdown * 100).toFixed(2)}%` : 'N/A' },
+    { 
+      title: '参数', 
+      key: 'params',
+      render(row) {
+        const params = row.summary?.params;
+        return params ? JSON.stringify(params) : '默认';
+      }
+    },
+    { title: '夏普比率', key: 'sharpe_ratio', render: (row) => row.summary?.sharpe_ratio ? row.summary.sharpe_ratio.toFixed(2) : 'N/A' },
+    { title: '最大回撤', key: 'max_drawdown', render: (row) => row.summary?.max_drawdown ? `${(row.summary.max_drawdown * 100).toFixed(2)}%` : 'N/A' },
     {
         title: '操作',
         key: 'actions',
@@ -219,39 +245,43 @@ const historyColumns = [
     }
 ];
 
-// --- Charting Functions ---
-const initPnlChart = () => {
-  pnlChart = echarts.init(pnlChartRef.value, 'dark');
-  pnlChart.setOption({
-    backgroundColor: 'transparent',
-    tooltip: { trigger: 'axis' },
-    xAxis: { type: 'time', splitLine: { show: false } },
-    yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { type: 'dashed', color: '#333' } } },
-    series: [{
-      name: 'PnL',
-      data: [],
-      type: 'line',
-      smooth: true,
-      showSymbol: false,
-      lineStyle: { color: '#00c853' },
-      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(0, 200, 83, 0.3)' }, { offset: 1, color: 'rgba(0, 200, 83, 0)' }]) }
-    }],
-    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true }
-  });
-};
-
 const renderBacktestChart = (result) => {
   if (!backtestChartContainer.value) return;
   backtestChart = echarts.init(backtestChartContainer.value);
+
+  const pnlData = (result.daily_pnl && result.daily_pnl.pnl) ? result.daily_pnl.pnl : [];
+  const tradesData = (result.daily_pnl && result.daily_pnl.trades) ? result.daily_pnl.trades : [];
+
+  const orderPoints = tradesData.map(trade => ({
+    name: trade.type === 'buy' ? '买入' : '卖出',
+    coord: [trade.date, trade.price],
+    value: `${trade.type.toUpperCase()} @ ${trade.price.toFixed(2)}`,
+    symbol: trade.type === 'buy' ? 'arrow' : 'pin',
+    symbolSize: 15,
+    itemStyle: {
+      color: trade.type === 'buy' ? '#52c41a' : '#ff4d4f'
+    }
+  }));
+
   backtestChart.setOption({
     tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: result.daily_pnl.map(d => d.date) },
-    yAxis: { type: 'value', name: '权益' },
-    series: [{ name: '每日权益', type: 'line', data: result.daily_pnl.map(d => d.pnl), smooth: true, showSymbol: false }]
+    xAxis: { type: 'category', data: pnlData.map(d => d.date) },
+    yAxis: { type: 'value', name: '权益', scale: true },
+    series: [
+      {
+        name: '每日权益',
+        type: 'line',
+        data: pnlData.map(d => d.pnl),
+        smooth: true,
+        showSymbol: false,
+        markPoint: {
+          data: orderPoints
+        }
+      }
+    ]
   });
 };
 
-// --- CRUD Functions ---
 async function fetchStrategies() {
   try {
     const { data } = await api.getStrategies();
@@ -267,6 +297,7 @@ async function handleCreateStrategy() {
     message.success('策略创建成功');
     showCreateModal.value = false;
     newStrategyData.name = '';
+    newStrategyData.content = '';
     newStrategyData.description = '';
     await fetchStrategies();
     const strategyToEdit = strategies.value.find(s => s.id === newStrategy.id);
@@ -281,21 +312,21 @@ async function handleCreateStrategy() {
 function openEditModal(strategy) {
   activeStrategy.value = strategy;
   editStrategyData.id = strategy.id;
-  editStrategyData.code = '// Loading...';
+  editStrategyData.content = '// Loading...';
   showEditModal.value = true;
 
   api.getStrategyScript(strategy.id).then(response => {
-    editStrategyData.code = response.data.script_content || `// Code for ${strategy.name}`;
+    editStrategyData.content = response.data.content || `// Code for ${strategy.name}`;
     nextTick(() => {
       if (editorContainer.value) {
         if (!monacoInstance) {
           monacoInstance = monaco.editor.create(editorContainer.value, {
-            value: editStrategyData.code,
+            value: editStrategyData.content,
             language: 'python',
             theme: 'vs-dark'
           });
         } else {
-          monacoInstance.setValue(editStrategyData.code);
+          monacoInstance.setValue(editStrategyData.content);
         }
       }
     });
@@ -304,10 +335,10 @@ function openEditModal(strategy) {
 
 async function handleUpdateStrategy() {
   if (!monacoInstance) return;
-  const newCode = monacoInstance.getValue();
+  const newContent = monacoInstance.getValue();
   try {
-    await api.updateStrategy(editStrategyData.id, { script_content: newCode });
-    message.success('代码保存成功');
+    await api.updateStrategy(editStrategyData.id, { script_content: newContent });
+    message.success('策略代码保存成功');
     showEditModal.value = false;
   } catch (error) {
     message.error('代码保存失败');
@@ -317,20 +348,19 @@ async function handleUpdateStrategy() {
 async function runStrategy(id) {
   try {
     await api.startStrategy(id);
-    message.success('策略已启动');
+    message.success('模拟交易已启动');
     fetchStrategies();
   }
   catch (error) {
-    message.error('启动策略失败');
+    message.error('启动模拟交易失败');
   }
 }
 
 async function stopStrategy(id) {
   try {
     await api.stopStrategy(id);
-    message.success('策略已停止');
-    backtesting_ids.value.delete(id);
-    disconnectWebSocket();
+    message.success('模拟交易已停止');
+    dashboardStore.clearData();
     fetchStrategies();
   } catch (error) {
     message.error('停止策略失败');
@@ -355,7 +385,6 @@ function deleteStrategy(id) {
   });
 }
 
-// --- Backtest Functions ---
 function openBacktestModal(strategy) {
   backtestParams.strategy_id = strategy.id;
   backtestParams.start_date = new Date().setFullYear(new Date().getFullYear() - 1);
@@ -363,46 +392,44 @@ function openBacktestModal(strategy) {
   showBacktestModal.value = true;
 }
 
-import { sendWebSocketMessage } from '@/services/websocket';
-
-// ... (rest of the script setup)
-
 async function handleRunBacktest() {
   try {
-    dashboardStore.clearData(); // 清空上次回测的日志和数据
-    const params = {
+    dashboardStore.clearData();
+    const backtestRequestParams = {
       symbol: backtestParams.symbol,
       duration: backtestParams.duration,
       start_dt: new Date(backtestParams.start_date).toISOString(),
       end_dt: new Date(backtestParams.end_date).toISOString(),
     };
 
-    // 1. 直接调用API，后端将创建记录并启动Celery任务
-    const { data } = await api.runBacktest(backtestParams.strategy_id, params);
-    const backtestId = response.backtest_id;
+    if (optimParams.value.length > 0) {
+      await api.runOptimization(backtestParams.strategy_id, backtestRequestParams, optimParams.value);
+      message.success('参数优化任务已启动！请稍后在历史报告中查看结果。');
+      backtesting_ids.value.add(backtestParams.strategy_id);
+      startPolling(backtestParams.strategy_id);
+    } else {
+        const { data } = await api.runBacktest(backtestParams.strategy_id, backtestRequestParams);
+        message.info(`回测任务已启动 (ID: ${data.backtest_id})，等待结果...`);
+        dashboardStore.addLog(`[${new Date().toLocaleTimeString()}] Backtest (ID: ${data.backtest_id}) started. Waiting for completion...`);
+        backtesting_ids.value.add(backtestParams.strategy_id);
+        startPolling(backtestParams.strategy_id);
+    }
 
-    message.info(`回测任务已启动 (ID: ${backtestId})，等待实时数据...`);
-    backtesting_ids.value.add(backtestParams.strategy_id);
+    optimParams.value = [];
     showBacktestModal.value = false;
 
-    // 2. 连接WebSocket以接收实时进度
-    connectWebSocket(
-      backtestId,
-      () => { wsStatus.value = 'connected'; }, // onOpen
-      () => { // onClose
-          wsStatus.value = 'disconnected';
-          backtesting_ids.value.delete(backtestParams.strategy_id);
-          fetchStrategies(); // 刷新策略状态
-      },
-      () => { wsStatus.value = 'error'; } // onError
-    );
-
   } catch (error) {
-    const errorMsg = error.response?.data?.detail || '启动回测失败';
+    const errorMsg = error.response?.data?.detail || '启动回测/优化失败';
     message.error(errorMsg);
     backtesting_ids.value.delete(backtestParams.strategy_id);
   }
 }
+
+watch(showBacktestModal, (isShown) => {
+  if (!isShown) {
+    optimParams.value = [];
+  }
+});
 
 async function openHistoryModal(strategy) {
     activeStrategy.value = strategy;
@@ -418,11 +445,11 @@ async function fetchHistoryAndStartPolling(strategyId) {
         const isAnyRunning = data.some(b => ['PENDING', 'RUNNING'].includes(b.status));
         
         if (isAnyRunning && !pollingInterval) {
-            // 如果有正在运行的任务且没有轮询器，则启动
             startPolling(strategyId);
         } else if (!isAnyRunning && pollingInterval) {
-            // 如果没有正在运行的任务但轮询器还在，则停止
             stopPolling();
+            backtesting_ids.value.delete(strategyId);
+            fetchStrategies(); // 优化完成后刷新策略状态
         }
 
     } catch (error) {
@@ -433,18 +460,18 @@ async function fetchHistoryAndStartPolling(strategyId) {
 
 async function showReportFromHistory(backtestId) {
     try {
+        dashboardStore.clearData();
         const { data } = await api.getBacktestReport(backtestId);
         dashboardStore.setBacktestResult(data);
-        showHistoryModal.value = false; // 关闭历史记录弹窗
-        showBacktestReport.value = true; // 显示报告弹窗
-        nextTick(() => renderBacktestChart(data));
+        showHistoryModal.value = false;
+
     } catch (error) {
         message.error('加载报告详情失败');
     }
 }
 
 function startPolling(strategyId) {
-  stopPolling(); // 先确保旧的已停止
+  stopPolling();
   pollingInterval = setInterval(() => {
     fetchHistoryAndStartPolling(strategyId);
   }, 5000);
@@ -459,6 +486,7 @@ function stopPolling() {
 
 const formatSummaryValue = (key, value) => {
   const keyName = key.toLowerCase();
+  if (key === 'params' && typeof value === 'object' && value !== null) return JSON.stringify(value);
   if (typeof value !== 'number') return value;
 
   if (keyName.includes('ratio') || keyName.includes('rate') || keyName.includes('return') || keyName.includes('drawdown')) {
@@ -470,51 +498,18 @@ const formatSummaryValue = (key, value) => {
 const closeReportModal = () => {
   showBacktestReport.value = false;
   dashboardStore.setBacktestResult(null);
-  disconnectWebSocket();
   if (backtestChart) {
     backtestChart.dispose();
     backtestChart = null;
   }
 };
 
-// --- Watchers ---
-watch(pnlHistory, (newHistory) => {
-  if (pnlChart) {
-    // Backend sends `date` string, not `timestamp`. ECharts time axis handles Date objects.
-    const chartData = newHistory.map(item => [new Date(item.date), item.pnl]);
-    pnlChart.setOption({
-      series: [{
-        data: chartData
-      }]
-    });
-  }
-}, { deep: true });
-
-watch(orderEvents, (newEvent) => {
-  if (pnlChart && newEvent && newEvent.length > 0) {
-    const lastEvent = newEvent[newEvent.length - 1];
-    const markPoint = {
-      symbol: lastEvent.direction === 'BUY' ? 'arrow' : 'pin',
-      symbolSize: 15,
-      data: [{
-        name: 'Order',
-        coord: [lastEvent.timestamp, lastEvent.price],
-        value: `${lastEvent.direction} @ ${lastEvent.price}`,
-        itemStyle: { color: lastEvent.direction === 'BUY' ? '#ff4d4f' : '#52c41a' }
-      }]
-    };
-    const currentOptions = pnlChart.getOption();
-    const existingMarkPoints = currentOptions.series[0].markPoint?.data || [];
-    pnlChart.setOption({ series: [{ markPoint: { data: [...existingMarkPoints, ...markPoint.data] } }] });
-  }
-}, { deep: true });
-
 watch(backtestResult, (newResult) => {
   if (newResult) {
     backtesting_ids.value.delete(newResult.strategy_id);
-    fetchStrategies(); // Refresh strategies to get updated backtest_results list
+    stopPolling();
+    fetchStrategies();
 
-    // 将回测结果添加到日志中
     const timestamp = new Date().toLocaleTimeString();
     const summaryText = Object.entries(newResult.summary)
       .map(([key, value]) => `${key}: ${formatSummaryValue(key, value)}`)
@@ -540,20 +535,16 @@ watch(showHistoryModal, (newValue) => {
   }
 });
 
-// --- Lifecycle Hooks ---
 onMounted(() => {
   dashboardStore.clearData();
   fetchStrategies();
-  initPnlChart();
-  window.addEventListener('resize', () => pnlChart?.resize());
+  connectWebSocket();
 });
 
 onUnmounted(() => {
   disconnectWebSocket();
   stopPolling();
-  pnlChart?.dispose();
   backtestChart?.dispose();
   if (monacoInstance) monacoInstance.dispose();
-  window.removeEventListener('resize', () => pnlChart?.resize());
 });
 </script>

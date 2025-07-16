@@ -1,22 +1,45 @@
 # backend/app/services/data_service.py
 import pandas as pd
+import asyncio
 from tqsdk import TqApi, TqAuth
 from datetime import datetime
 from app.schemas.backtest import KlineDuration
 from app.core.config import TQ_USER, TQ_PASSWORD
 
 class DataService:
+    async def _fetch_data_async(self, symbol: str, duration_seconds: int, data_length: int) -> pd.DataFrame:
+        """
+        一个独立的、纯异步的函数，负责所有与TqSdk的交互。
+        """
+        api = None
+        try:
+            # 在异步函数内部创建和关闭TqApi
+            api = TqApi(auth=TqAuth(TQ_USER, TQ_PASSWORD))
+            print(f"Async fetch: Requesting {data_length} klines for symbol {symbol}...")
+            klines = api.get_kline_serial(symbol, duration_seconds=duration_seconds, data_length=data_length)
+            
+            # 等待数据加载完成
+            # 设置一个超时以防万一
+            wait_deadline = datetime.now().timestamp() + 60  # 增加超时到60秒
+            while not api.is_preloaded(klines):
+                # 使用 asyncio.sleep 让出控制权，让TqSdk的后台任务有机会运行
+                await asyncio.sleep(0.1)
+                if datetime.now().timestamp() > wait_deadline:
+                    raise Exception("TqSdk preloading klines timed out after 60 seconds.")
+
+            print(f"Async fetch: Klines preloaded. Total rows received: {len(klines)}")
+            return pd.DataFrame(klines)
+        except Exception as e:
+            print(f"Error fetching data for {symbol}: {e}")
+            return pd.DataFrame()
+        finally:
+            if api:
+                api.close()
+
     def get_kline_data(self, symbol: str, duration: KlineDuration, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        获取指定期货合约在日期范围内的K线行情数据
-        :param symbol: TqSdk的合约代码, e.g., 'SHFE.rb2501'
-        :param duration: K线周期, KlineDuration枚举类型
-        :param start_date: 开始日期, 格式 'YYYYMMDD'
-        :param end_date: 结束日期, 格式 'YYYYMMDD'
-        :return: pandas DataFrame, 包含开高低收等数据
+        同步的入口函数，它调用并运行异步的 fetching 函数。
         """
-        # 在函数内部创建和关闭TqApi实例，确保线程安全
-        api = TqApi(auth=TqAuth(TQ_USER, TQ_PASSWORD))
         try:
             duration_map = {
                 "1d": 24 * 60 * 60,
@@ -30,63 +53,65 @@ class DataService:
             start_dt = datetime.strptime(start_date, '%Y%m%d')
             end_dt = datetime.strptime(end_date, '%Y%m%d')
             
-            # 根据周期估算数据长度
             days = (end_dt - start_dt).days
+            if days <= 0:
+                days = 1
+            
             if duration_seconds >= 24 * 60 * 60:
-                data_length = int(days * 1.2) + 50 # 日线
+                data_length = int(days * 1.5) + 200 
             else:
-                data_length = int(days * (24 * 60 * 60 / duration_seconds) * 1.2) + 200 # 分钟线
+                trading_hours_per_day = 8 
+                bars_per_hour = 3600 / duration_seconds
+                data_length = int(days * trading_hours_per_day * bars_per_hour * 1.5) + 500
             
-            klines = api.get_kline_serial(symbol, duration_seconds=duration_seconds, data_length=data_length)
+            # 使用 asyncio.run() 来同步地执行异步函数
+            # 这会创建一个新的事件循环，运行任务，然后关闭循环。
+            klines_df = asyncio.run(self._fetch_data_async(symbol, duration_seconds, data_length))
 
-            # TqSdk返回的是纳秒级时间戳，需要转换为datetime对象
-            klines['datetime'] = pd.to_datetime(klines['datetime'], unit='ns')
-
-            klines = klines[klines.datetime.dt.date >= start_dt.date()]
-            klines = klines[klines.datetime.dt.date <= end_dt.date()]
-            
-            if klines.empty:
+            if klines_df.empty:
                 return pd.DataFrame()
 
-            klines = klines.rename(columns={
-                'datetime': 'trade_date_dt',
+            klines_df['datetime_dt'] = pd.to_datetime(klines_df['datetime'], unit='ns')
+
+            klines_filtered = klines_df[
+                (klines_df['datetime_dt'].dt.tz_localize('UTC').dt.tz_convert('Asia/Shanghai').dt.date >= start_dt.date()) &
+                (klines_df['datetime_dt'].dt.tz_localize('UTC').dt.tz_convert('Asia/Shanghai').dt.date <= end_dt.date())
+            ]
+            
+            print(f"Rows after filtering by date range: {len(klines_filtered)}")
+
+            if klines_filtered.empty:
+                return pd.DataFrame()
+
+            klines_final = klines_filtered.copy()
+            klines_final.rename(columns={
                 'open': 'open',
                 'high': 'high',
                 'low': 'low',
                 'close': 'close',
                 'volume': 'vol'
-            })
-            klines['trade_date'] = klines['trade_date_dt'].dt.strftime('%Y%m%d %H:%M:%S')
+            }, inplace=True)
+            klines_final['trade_date'] = klines_final['datetime_dt'].dt.strftime('%Y%m%d %H:%M:%S')
             
-            return klines[['trade_date', 'open', 'high', 'low', 'close', 'vol']].reset_index(drop=True)
+            return klines_final[['trade_date', 'open', 'high', 'low', 'close', 'vol']].reset_index(drop=True)
             
         except Exception as e:
-            print(f"Error fetching data from TqSdk for {symbol}: {e}")
+            print(f"Error in get_kline_data for {symbol}: {e}")
             return pd.DataFrame()
-        finally:
-            # 确保api被关闭
-            api.close()
-
-
 
 data_service = DataService()
 
 if __name__ == '__main__':
     try:
-        # 测试获取螺纹钢2501合约2024年6月的1小时K线
-        test_data = data_service.get_kline_data('SHFE.rb2501', KlineDuration.one_hour, '20240601', '20240630')
-        if not test_data.empty:
-            print("Successfully fetched 1H data:")
-            print(test_data.head())
-        else:
-            print("Failed to fetch 1H data.")
-            
-        # 测试获取日线
-        test_data_daily = data_service.get_kline_data('SHFE.rb2501', KlineDuration.one_day, '20240601', '20240630')
+        # 测试获取螺纹钢2501合约 3个月的日线数据
+        print("--- Testing Daily Data ---")
+        test_data_daily = data_service.get_kline_data('SHFE.rb2501', KlineDuration.one_day, '20240101', '20240331')
         if not test_data_daily.empty:
-            print("Successfully fetched Daily data:")
+            print("\nSuccessfully fetched Daily data:")
             print(test_data_daily.head())
+            print(test_data_daily.tail())
+            print(f"Total rows: {len(test_data_daily)}")
         else:
-            print("Failed to fetch Daily data.")
+            print("\nFailed to fetch Daily data.")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")

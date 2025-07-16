@@ -1,3 +1,4 @@
+# backend/app/schemas/backtest.py
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,13 @@ class KlineDuration(str, Enum):
     fifteen_minutes = "15m"
     one_hour = "1h"
     one_day = "1d"
+
+# --- 新增: 参数优化请求 ---
+class OptimizationParameter(BaseModel):
+    name: str # 参数名, e.g., "short_window"
+    start: float
+    end: float
+    step: float
 
 class BacktestRequest(BaseModel):
     symbol: str
