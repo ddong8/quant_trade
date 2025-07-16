@@ -51,14 +51,14 @@ class BacktestResultUpdate(BaseModel):
     task_id: Optional[str] = None
     status: Optional[str] = None
     summary: Optional[Dict[str, Any]] = None
-    daily_pnl: Optional[List[Dict[str, Any]]] = None
+    daily_pnl: Optional[Dict[str, Any]] = None
 
 # Properties to return to client
 class BacktestResultInDB(BacktestResultCreate):
     id: int
     created_at: datetime
     summary: Optional[Dict[str, Any]] = None
-    daily_pnl: Optional[List[Dict[str, Any]]] = None
+    daily_pnl: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True

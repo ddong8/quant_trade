@@ -10,9 +10,10 @@ from app.db.session import SessionLocal
 from app.crud import crud_backtest, crud_strategy
 from app.schemas.backtest import BacktestResultUpdate, BacktestResultCreate, KlineDuration
 from app.services.data_service import data_service
+from app.services.strategy_base import BaseStrategy
 
 class SimpleBacktester:
-    def __init__(self, backtest_id: int, symbol: str, duration: str, start_date: str, end_date: str, strategy_code: str, initial_cash: float = 100000.0, params_override: Optional[Dict] = None):
+    def __init__(self, backtest_id: int, symbol: str, duration: KlineDuration, start_date: str, end_date: str, strategy_code: str, initial_cash: float = 100000.0, params_override: Optional[Dict] = None):
         self.backtest_id = backtest_id
         self.symbol = symbol
         self.duration = duration
@@ -32,6 +33,10 @@ class SimpleBacktester:
         try:
             spec = importlib.util.spec_from_loader("strategy_module", loader=None)
             strategy_module = importlib.util.module_from_spec(spec)
+            
+            # 【修复】手动注入 BaseStrategy 到策略模块的命名空间
+            strategy_module.BaseStrategy = BaseStrategy
+            
             exec(self.strategy_code, strategy_module.__dict__)
             
             strategy_class = strategy_module.Strategy
@@ -164,6 +169,15 @@ def run_backtest_task(backtest_id: int, params_override: Optional[Dict] = None):
         strategy = crud_strategy.get_strategy(db, backtest_record.strategy_id)
         if not strategy:
             raise ValueError("Strategy not found")
+        
+        if not strategy.script_path:
+            raise ValueError(f"Strategy '{strategy.name}' has no script path.")
+
+        try:
+            with open(strategy.script_path, 'r', encoding='utf-8') as f:
+                strategy_code_content = f.read()
+        except FileNotFoundError:
+            raise ValueError(f"Strategy script file not found at path: {strategy.script_path}")
 
         start_date_formatted = backtest_record.start_dt.strftime('%Y%m%d')
         end_date_formatted = backtest_record.end_dt.strftime('%Y%m%d')
@@ -171,10 +185,10 @@ def run_backtest_task(backtest_id: int, params_override: Optional[Dict] = None):
         backtester = SimpleBacktester(
             backtest_id=backtest_id,
             symbol=backtest_record.symbol,
-            duration=backtest_record.duration.value,
+            duration=backtest_record.duration,  # 传递整个枚举对象
             start_date=start_date_formatted,
             end_date=end_date_formatted,
-            strategy_code=strategy.content,
+            strategy_code=strategy_code_content,
             params_override=params_override
         )
         
@@ -196,6 +210,8 @@ def run_backtest_task(backtest_id: int, params_override: Optional[Dict] = None):
         crud_backtest.update_backtest_result(db, db_obj=backtest_record, obj_in=update_data)
 
     except Exception as e:
+        import traceback
+        traceback.print_exc() # 打印完整的错误堆栈
         error_summary = backtest_record.summary or {}
         error_summary["error"] = str(e)
         update_data = BacktestResultUpdate(status="FAILURE", summary=error_summary)

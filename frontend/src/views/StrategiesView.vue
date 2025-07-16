@@ -1,10 +1,7 @@
 <template>
   <n-space vertical :size="24">
     <!-- 顶部状态 & 统计 -->
-    <n-alert :title="wsStatusTitle" :type="wsStatusType" closable>
-      {{ wsStatusMessage }}
-    </n-alert>
-
+    
     <n-grid :cols="4" :x-gap="24">
       <n-gi>
         <n-statistic label="账户总权益" tabular-nums>
