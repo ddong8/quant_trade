@@ -33,10 +33,17 @@ class BacktestRequest(BaseModel):
     duration: KlineDuration
     start_dt: datetime
     end_dt: datetime
+    commission_rate: float = 0.0003
+    slippage: float = 0.0
+
+class OptimizationRequest(BacktestRequest):
+    optim_params: List[OptimizationParameter]
 
 # Shared properties
 class BacktestResultBase(BaseModel):
     strategy_id: int
+    optimization_id: Optional[str] = None
+
 
 # Properties to receive on creation
 class BacktestResultCreate(BacktestResultBase):
@@ -45,6 +52,10 @@ class BacktestResultCreate(BacktestResultBase):
     start_dt: datetime
     end_dt: datetime
     status: str = "PENDING"
+    commission_rate: float
+    slippage: float
+    optimization_id: Optional[str] = None
+
 
 # Properties to receive on update
 class BacktestResultUpdate(BaseModel):
@@ -53,12 +64,14 @@ class BacktestResultUpdate(BaseModel):
     summary: Optional[Dict[str, Any]] = None
     daily_pnl: Optional[Dict[str, Any]] = None
 
+
 # Properties to return to client
 class BacktestResultInDB(BacktestResultCreate):
     id: int
     created_at: datetime
     summary: Optional[Dict[str, Any]] = None
     daily_pnl: Optional[Dict[str, Any]] = None
+    optimization_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -66,12 +79,14 @@ class BacktestResultInDB(BacktestResultCreate):
             datetime: datetime_encoder
         }
 
+
 class BacktestResultInfo(BaseModel):
     id: int
     created_at: datetime
     status: str
     sharpe_ratio: Optional[float] = None
     max_drawdown: Optional[float] = None
+    optimization_id: Optional[str] = None
 
     class Config:
         from_attributes = True

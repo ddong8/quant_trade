@@ -7,9 +7,11 @@ from .backtest import BacktestResultInfo
 class StrategyScript(BaseModel):
     content: str
 
-class StrategyCreate(StrategyScript):
+class StrategyCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    content: Optional[str] = None # 用户可以直接提供内容
+    template_name: Optional[str] = None # 或者选择一个模板
 
 # Base schema for database and API responses
 class StrategyBase(BaseModel):

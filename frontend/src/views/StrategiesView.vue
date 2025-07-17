@@ -69,6 +69,9 @@
       <n-form @submit.prevent="handleCreateStrategy">
         <n-form-item label="策略名称"><n-input v-model:value="newStrategyData.name" /></n-form-item>
         <n-form-item label="策略描述"><n-input v-model:value="newStrategyData.description" type="textarea" /></n-form-item>
+        <n-form-item label="选择模板">
+          <n-select v-model:value="newStrategyData.template_name" :options="strategyTemplateOptions" />
+        </n-form-item>
         <n-button type="primary" attr-type="submit" block>创建</n-button>
       </n-form>
     </n-modal>
@@ -91,6 +94,16 @@
         <n-form-item label="开始日期"><n-date-picker v-model:value="backtestParams.start_date" type="date" style="width: 100%;" /></n-form-item>
         <n-form-item label="结束日期"><n-date-picker v-model:value="backtestParams.end_date" type="date" style="width: 100%;" /></n-form-item>
         
+        <n-h4>交易设置</n-h4>
+        <n-form-item label="手续费率 (%)">
+          <n-input-number v-model:value="backtestParams.commission_rate" :min="0" :step="0.0001">
+            <template #suffix>%</template>
+          </n-input-number>
+        </n-form-item>
+        <n-form-item label="滑点 (元)">
+          <n-input-number v-model:value="backtestParams.slippage" :min="0" :step="0.01" />
+        </n-form-item>
+
         <n-h4>参数优化</n-h4>
         <n-p depth="3">如果要进行参数优化，请在此处添加参数。否则将使用策略文件中的默认值进行单次回测。</n-p>
         
@@ -113,11 +126,40 @@
           <n-h3>权益曲线</n-h3>
           <div ref="backtestChartContainer" style="width: 100%; height: 400px;"></div>
           <n-h3>绩效指标</n-h3>
-          <n-descriptions label-placement="left" bordered :column="2">
-            <n-descriptions-item v-for="(value, key) in backtestResult.summary" :key="key" :label="key">
-              {{ formatSummaryValue(key, value) }}
-            </n-descriptions-item>
+          <n-descriptions label-placement="left" bordered :column="4">
+            <n-descriptions-item label="初始资金">{{ formatSummaryValue('initial_equity', backtestResult.summary.initial_equity) }}</n-descriptions-item>
+            <n-descriptions-item label="最终资金">{{ formatSummaryValue('final_equity', backtestResult.summary.final_equity) }}</n-descriptions-item>
+            <n-descriptions-item label="总收益率">{{ formatSummaryValue('total_return', backtestResult.summary.total_return) }}</n-descriptions-item>
+            <n-descriptions-item label="年化收益率">{{ formatSummaryValue('annualized_return', backtestResult.summary.annualized_return) }}</n-descriptions-item>
+            
+            <n-descriptions-item label="年化波动率">{{ formatSummaryValue('annualized_volatility', backtestResult.summary.annualized_volatility) }}</n-descriptions-item>
+            <n-descriptions-item label="最大回撤">{{ formatSummaryValue('max_drawdown', backtestResult.summary.max_drawdown) }}</n-descriptions-item>
+            <n-descriptions-item label="夏普比率">{{ formatSummaryValue('sharpe_ratio', backtestResult.summary.sharpe_ratio) }}</n-descriptions-item>
+            <n-descriptions-item label="索提诺比率">{{ formatSummaryValue('sortino_ratio', backtestResult.summary.sortino_ratio) }}</n-descriptions-item>
+
+            <n-descriptions-item label="卡玛比率">{{ formatSummaryValue('calmar_ratio', backtestResult.summary.calmar_ratio) }}</n-descriptions-item>
+            <n-descriptions-item label="总交易次数">{{ formatSummaryValue('total_trades', backtestResult.summary.total_trades) }}</n-descriptions-item>
+            <n-descriptions-item label="胜率">{{ formatSummaryValue('win_rate', backtestResult.summary.win_rate) }}</n-descriptions-item>
+            <n-descriptions-item label="盈亏比">{{ formatSummaryValue('profit_factor', backtestResult.summary.profit_factor) }}</n-descriptions-item>
           </n-descriptions>
+          
+          <div v-if="backtestResult.summary.params">
+            <n-h4>优化参数</n-h4>
+            <n-descriptions label-placement="left" bordered :column="1">
+              <n-descriptions-item label="参数组合">
+                {{ formatSummaryValue('params', backtestResult.summary.params) }}
+              </n-descriptions-item>
+            </n-descriptions>
+          </div>
+
+          <n-h3>交易明细</n-h3>
+          <n-data-table
+            :columns="tradeHistoryColumns"
+            :data="backtestResult.daily_pnl.trades"
+            :pagination="{ pageSize: 10 }"
+            :bordered="false"
+            size="small"
+          />
         </div>
         <template #footer><n-button @click="closeReportModal">关闭</n-button></template>
       </n-spin>
@@ -126,10 +168,17 @@
     <n-modal v-model:show="showHistoryModal" preset="card" style="width: 800px;" title="历史回测报告">
       <n-data-table
         :columns="historyColumns"
-        :data="backtestHistory"
+        :data="groupedHistory"
         :pagination="false"
         :bordered="false"
       />
+    </n-modal>
+
+    <n-modal v-model:show="showOptimizationReportModal" preset="card" style="width: 90vw; max-width: 1000px;" title="参数优化报告">
+      <n-spin :show="!optimizationResults.length">
+        <div ref="optimizationChartContainer" style="width: 100%; height: 500px;"></div>
+        <template #footer><n-button @click="showOptimizationReportModal = false">关闭</n-button></template>
+      </n-spin>
     </n-modal>
 
   </n-space>
@@ -158,17 +207,26 @@ const showEditModal = ref(false);
 const showBacktestModal = ref(false);
 const showBacktestReport = ref(false);
 const showHistoryModal = ref(false);
+const showOptimizationReportModal = ref(false);
 const activeStrategy = ref(null);
-const newStrategyData = reactive({ name: '', description: '', content: '' });
+const newStrategyData = reactive({ name: '', description: '', template_name: 'empty' });
 const editStrategyData = reactive({ id: null, content: '' });
 const backtestParams = reactive({
   strategy_id: null,
   symbol: 'SHFE.rb2501',
   duration: '1d',
   start_date: null,
-  end_date: null
+  end_date: null,
+  commission_rate: 0.0003, // 0.03%
+  slippage: 0.01, // 1 tick or price unit
 });
 const optimParams = ref([]);
+const optimizationResults = ref([]);
+
+const strategyTemplateOptions = [
+  { label: '均线交叉策略模板', value: 'ma_crossover' },
+  { label: '空策略', value: 'empty' },
+];
 
 const addOptimParam = () => {
   optimParams.value.push({ name: '', start: 0, end: 0, step: 1 });
@@ -192,6 +250,8 @@ let monacoInstance = null;
 
 const backtestChartContainer = ref(null);
 let backtestChart = null;
+const optimizationChartContainer = ref(null);
+let optimizationChart = null;
 
 const logText = computed(() => logs.value.join('\n'));
 const wsStatusTitle = computed(() => ({
@@ -211,20 +271,64 @@ const statusMap = {
   error: { text: '错误', type: 'error' },
 };
 
+const groupedHistory = computed(() => {
+  if (!backtestHistory.value || backtestHistory.value.length === 0) return [];
+
+  const optimizations = {};
+  const singleRuns = [];
+
+  backtestHistory.value.forEach(run => {
+    if (run.optimization_id) {
+      if (!optimizations[run.optimization_id]) {
+        optimizations[run.optimization_id] = {
+          isGroup: true,
+          optimization_id: run.optimization_id,
+          created_at: run.created_at, // Use the first run's creation time
+          status: 'COMPLETED', // Assume completed if we have results
+          run_count: 0,
+          best_sharpe: -Infinity,
+          children: [],
+        };
+      }
+      const group = optimizations[run.optimization_id];
+      group.run_count++;
+      group.children.push(run);
+      if (run.status === 'PENDING' || run.status === 'RUNNING') {
+        group.status = 'RUNNING';
+      }
+      const sharpe = run.summary?.sharpe_ratio;
+      if (sharpe && sharpe > group.best_sharpe) {
+        group.best_sharpe = sharpe;
+      }
+
+    } else {
+      singleRuns.push(run);
+    }
+  });
+
+  const sortedOptimizations = Object.values(optimizations).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+  return [...sortedOptimizations, ...singleRuns];
+});
+
 const historyColumns = [
-    { title: '回测ID', key: 'id' },
+    { title: '类型', key: 'type', render: (row) => row.isGroup ? h(NTag, {type: 'info'}, {default: () => '优化'}) : h(NTag, {}, {default: () => '单次'}) },
     { title: '创建时间', key: 'created_at', render: (row) => new Date(row.created_at).toLocaleString() },
     { title: '状态', key: 'status' },
     { 
-      title: '参数', 
-      key: 'params',
+      title: '详情', 
+      key: 'details',
       render(row) {
-        const params = row.summary?.params;
-        return params ? JSON.stringify(params) : '默认';
+        if (row.isGroup) {
+          return `共 ${row.run_count} 次运行, 最高夏普: ${row.best_sharpe.toFixed(2)}`;
+        } else {
+          const params = row.summary?.params;
+          return params ? JSON.stringify(params) : '默认参数';
+        }
       }
     },
-    { title: '夏普比率', key: 'sharpe_ratio', render: (row) => row.summary?.sharpe_ratio ? row.summary.sharpe_ratio.toFixed(2) : 'N/A' },
-    { title: '最大回撤', key: 'max_drawdown', render: (row) => row.summary?.max_drawdown ? `${(row.summary.max_drawdown * 100).toFixed(2)}%` : 'N/A' },
+    { title: '夏普比率', key: 'sharpe_ratio', render: (row) => row.isGroup ? (row.best_sharpe > -Infinity ? row.best_sharpe.toFixed(2) : 'N/A') : (row.summary?.sharpe_ratio ? row.summary.sharpe_ratio.toFixed(2) : 'N/A') },
+    { title: '最大回撤', key: 'max_drawdown', render: (row) => !row.isGroup && row.summary?.max_drawdown ? `${(row.summary.max_drawdown * 100).toFixed(2)}%` : 'N/A' },
     {
         title: '操作',
         key: 'actions',
@@ -233,13 +337,44 @@ const historyColumns = [
                 NButton,
                 {
                     size: 'small',
-                    onClick: () => showReportFromHistory(row.id),
-                    disabled: row.status !== 'SUCCESS'
+                    onClick: () => row.isGroup ? showOptimizationReport(row.optimization_id) : showReportFromHistory(row.id),
+                    disabled: row.status !== 'SUCCESS' && row.status !== 'COMPLETED'
                 },
                 { default: () => '查看报告' }
             );
         }
     }
+];
+
+const tradeHistoryColumns = [
+  {
+    title: '成交时间',
+    key: 'date'
+  },
+  {
+    title: '交易类型',
+    key: 'type',
+    render(row) {
+      return h(
+        NTag,
+        { 
+          size: 'small',
+          type: row.type === 'buy' ? 'success' : 'error' 
+        },
+        { default: () => (row.type === 'buy' ? '买入' : '卖出') }
+      )
+    }
+  },
+  {
+    title: '成交价格',
+    key: 'price',
+    render: (row) => row.price.toFixed(2)
+  },
+  {
+    title: '成交数量',
+    key: 'shares',
+    render: (row) => row.shares.toFixed(4)
+  }
 ];
 
 const renderBacktestChart = (result) => {
@@ -294,8 +429,8 @@ async function handleCreateStrategy() {
     message.success('策略创建成功');
     showCreateModal.value = false;
     newStrategyData.name = '';
-    newStrategyData.content = '';
     newStrategyData.description = '';
+    newStrategyData.template_name = 'empty';
     await fetchStrategies();
     const strategyToEdit = strategies.value.find(s => s.id === newStrategy.id);
     if (strategyToEdit) {
@@ -397,10 +532,16 @@ async function handleRunBacktest() {
       duration: backtestParams.duration,
       start_dt: new Date(backtestParams.start_date).toISOString(),
       end_dt: new Date(backtestParams.end_date).toISOString(),
+      commission_rate: backtestParams.commission_rate,
+      slippage: backtestParams.slippage,
     };
 
     if (optimParams.value.length > 0) {
-      await api.runOptimization(backtestParams.strategy_id, backtestRequestParams, optimParams.value);
+      const optimizationRequestParams = {
+        ...backtestRequestParams,
+        optim_params: optimParams.value,
+      };
+      await api.runOptimization(backtestParams.strategy_id, optimizationRequestParams);
       message.success('参数优化任务已启动！请稍后在历史报告中查看结果。');
       backtesting_ids.value.add(backtestParams.strategy_id);
       startPolling(backtestParams.strategy_id);
@@ -465,6 +606,85 @@ async function showReportFromHistory(backtestId) {
     } catch (error) {
         message.error('加载报告详情失败');
     }
+}
+
+async function showOptimizationReport(optimizationId) {
+  try {
+    const { data } = await api.getOptimizationResults(optimizationId);
+    optimizationResults.value = data;
+    showHistoryModal.value = false;
+    showOptimizationReportModal.value = true;
+    nextTick(() => renderOptimizationChart(data));
+  } catch (error) {
+    message.error('加载优化报告失败');
+  }
+}
+
+function renderOptimizationChart(results) {
+  if (!optimizationChartContainer.value) return;
+  optimizationChart = echarts.init(optimizationChartContainer.value);
+
+  const params = results.map(r => r.summary.params);
+  const paramNames = Object.keys(params[0]);
+  const xAxisName = paramNames[0];
+  const yAxisName = paramNames[1];
+
+  const xData = [...new Set(params.map(p => p[xAxisName]))].sort((a, b) => a - b);
+  const yData = [...new Set(params.map(p => p[yAxisName]))].sort((a, b) => a - b);
+
+  const data = results.map(r => [
+    r.summary.params[xAxisName],
+    r.summary.params[yAxisName],
+    r.summary.sharpe_ratio || 0
+  ]);
+
+  optimizationChart.setOption({
+    tooltip: {
+      position: 'top',
+      formatter: function (params) {
+        return `Sharpe: ${params.value[2].toFixed(2)}<br>${xAxisName}: ${params.value[0]}<br>${yAxisName}: ${params.value[1]}`;
+      }
+    },
+    grid: {
+      height: '80%',
+      top: '10%'
+    },
+    xAxis: {
+      type: 'category',
+      data: xData,
+      name: xAxisName
+    },
+    yAxis: {
+      type: 'category',
+      data: yData,
+      name: yAxisName
+    },
+    visualMap: {
+      min: Math.min(...data.map(d => d[2])),
+      max: Math.max(...data.map(d => d[2])),
+      calculable: true,
+      orient: 'horizontal',
+      left: 'center',
+      bottom: '0%'
+    },
+    series: [{
+      name: 'Sharpe Ratio',
+      type: 'heatmap',
+      data: data,
+      label: {
+        show: true,
+        formatter: function (params) {
+          return params.value[2].toFixed(1);
+        }
+      },
+      emphasis: {
+        itemStyle: {
+          shadowBlur: 10,
+          shadowColor: 'rgba(0, 0, 0, 0.5)'
+        }
+      }
+    }]
+  });
 }
 
 function startPolling(strategyId) {
@@ -542,6 +762,7 @@ onUnmounted(() => {
   disconnectWebSocket();
   stopPolling();
   backtestChart?.dispose();
+  optimizationChart?.dispose();
   if (monacoInstance) monacoInstance.dispose();
 });
 </script>

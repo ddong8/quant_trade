@@ -13,13 +13,17 @@ from app.services.data_service import data_service
 from app.services.strategy_base import BaseStrategy
 
 class SimpleBacktester:
-    def __init__(self, backtest_id: int, symbol: str, duration: KlineDuration, start_date: str, end_date: str, strategy_code: str, initial_cash: float = 100000.0, params_override: Optional[Dict] = None):
+    def __init__(self, backtest_id: int, symbol: str, duration: KlineDuration, start_date: str, end_date: str, strategy_code: str, 
+                 commission_rate: float, slippage: float,
+                 initial_cash: float = 100000.0, params_override: Optional[Dict] = None):
         self.backtest_id = backtest_id
         self.symbol = symbol
         self.duration = duration
         self.start_date = start_date
         self.end_date = end_date
         self.strategy_code = strategy_code
+        self.commission_rate = commission_rate
+        self.slippage = slippage
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.position = 0
@@ -74,16 +78,24 @@ class SimpleBacktester:
                 signal = signal_data['signal'] if isinstance(signal_data, pd.Series) else signal_data['signal'].iloc[0]
 
                 if signal == 'buy' and self.position == 0 and self.last_signal != 'buy':
-                    shares_to_buy = self.cash / current_price
+                    buy_price = current_price + self.slippage
+                    shares_to_buy = self.cash / buy_price
+                    commission = shares_to_buy * buy_price * self.commission_rate
+                    
                     self.position = shares_to_buy
-                    self.cash = 0
-                    self.trades.append({'date': trade_date, 'type': 'buy', 'price': current_price, 'shares': shares_to_buy})
+                    self.cash -= commission
+                    self.trades.append({'date': trade_date, 'type': 'buy', 'price': buy_price, 'shares': shares_to_buy})
                     self.last_signal = 'buy'
+
                 elif signal == 'sell' and self.position > 0 and self.last_signal != 'sell':
+                    sell_price = current_price - self.slippage
                     shares_sold = self.position
-                    self.cash = self.position * current_price
+                    sale_value = shares_sold * sell_price
+                    commission = sale_value * self.commission_rate
+
+                    self.cash = sale_value - commission
                     self.position = 0
-                    self.trades.append({'date': trade_date, 'type': 'sell', 'price': current_price, 'shares': shares_sold})
+                    self.trades.append({'date': trade_date, 'type': 'sell', 'price': sell_price, 'shares': shares_sold})
                     self.last_signal = 'sell'
             
             self.total_equity = self.cash + self.position * current_price
@@ -102,21 +114,34 @@ class SimpleBacktester:
         equity_df = pd.DataFrame(self.equity_curve)
         equity_df['date'] = pd.to_datetime(equity_df['date'])
         
+        # 1. 收益率计算
         total_return = (self.total_equity / self.initial_cash - 1)
-        
         days = (equity_df['date'].iloc[-1] - equity_df['date'].iloc[0]).days
         annual_return = ((1 + total_return) ** (365.0 / days) - 1) if days > 0 else 0
         
+        # 2. 波动率和夏普比率
         equity_df['returns'] = equity_df['pnl'].pct_change().fillna(0)
-        sharpe_ratio = (equity_df['returns'].mean() / equity_df['returns'].std()) * (252 ** 0.5) if equity_df['returns'].std() != 0 else 0
+        annual_volatility = equity_df['returns'].std() * (252 ** 0.5)
+        sharpe_ratio = (annual_return / annual_volatility) if annual_volatility != 0 else 0
 
+        # 3. 索提诺比率 (只考虑下行风险)
+        downside_returns = equity_df['returns'][equity_df['returns'] < 0]
+        downside_std = downside_returns.std() * (252 ** 0.5)
+        sortino_ratio = (annual_return / downside_std) if downside_std != 0 else 0
+
+        # 4. 最大回撤和卡玛比率
         equity_df['peak'] = equity_df['pnl'].cummax()
         equity_df['drawdown'] = (equity_df['pnl'] - equity_df['peak']) / equity_df['peak']
         max_drawdown = equity_df['drawdown'].min()
-
         calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
 
+        # 5. 交易统计
         num_trades = len(self.trades) // 2
+        winning_trades = 0
+        losing_trades = 0
+        profit_factor = 0
+        win_rate = 0
+
         if num_trades > 0:
             trade_returns = []
             for i in range(0, len(self.trades) - 1, 2):
@@ -127,22 +152,27 @@ class SimpleBacktester:
             
             wins = [r for r in trade_returns if r > 0]
             losses = [r for r in trade_returns if r <= 0]
-            win_rate = len(wins) / num_trades if num_trades > 0 else 0
+            winning_trades = len(wins)
+            losing_trades = len(losses)
+            win_rate = winning_trades / num_trades if num_trades > 0 else 0
+            
             total_profit = sum(wins)
             total_loss = abs(sum(losses))
             profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
-        else:
-            win_rate = 0
-            profit_factor = 0
 
         summary = {
+            "initial_equity": self.initial_cash,
+            "final_equity": self.total_equity,
             "total_return": total_return,
             "annualized_return": annual_return,
-            "final_equity": self.total_equity,
-            "initial_equity": self.initial_cash,
+            "annualized_volatility": annual_volatility,
             "sharpe_ratio": sharpe_ratio,
+            "sortino_ratio": sortino_ratio,
             "calmar_ratio": calmar_ratio,
             "max_drawdown": max_drawdown,
+            "total_trades": num_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": losing_trades,
             "win_rate": win_rate,
             "profit_factor": profit_factor,
         }
@@ -185,10 +215,12 @@ def run_backtest_task(backtest_id: int, params_override: Optional[Dict] = None):
         backtester = SimpleBacktester(
             backtest_id=backtest_id,
             symbol=backtest_record.symbol,
-            duration=backtest_record.duration,  # 传递整个枚举对象
+            duration=backtest_record.duration,
             start_date=start_date_formatted,
             end_date=end_date_formatted,
             strategy_code=strategy_code_content,
+            commission_rate=backtest_record.commission_rate,
+            slippage=backtest_record.slippage,
             params_override=params_override
         )
         
@@ -223,7 +255,8 @@ def run_backtest_task(backtest_id: int, params_override: Optional[Dict] = None):
 def run_optimization_task(
     strategy_id: int,
     backtest_params: dict,
-    optimization_params: List[Dict[str, Any]]
+    optimization_params: List[Dict[str, Any]],
+    optimization_id: str
 ):
     import numpy as np
     from itertools import product
@@ -236,7 +269,7 @@ def run_optimization_task(
 
     param_combinations = list(product(*param_ranges))
     
-    print(f"Starting optimization for strategy {strategy_id} with {len(param_combinations)} combinations.")
+    print(f"Starting optimization {optimization_id} for strategy {strategy_id} with {len(param_combinations)} combinations.")
     
     db = SessionLocal()
     try:
@@ -246,6 +279,8 @@ def run_optimization_task(
             "duration": KlineDuration(backtest_params['duration']),
             "start_dt": datetime.fromisoformat(backtest_params['start_dt_iso']),
             "end_dt": datetime.fromisoformat(backtest_params['end_dt_iso']),
+            "commission_rate": backtest_params['commission_rate'],
+            "slippage": backtest_params['slippage'],
         }
         
         for combo in param_combinations:
@@ -254,6 +289,7 @@ def run_optimization_task(
             
             backtest_create = BacktestResultCreate(
                 strategy_id=strategy_id,
+                optimization_id=optimization_id,
                 **params_for_db
             )
             db_backtest = crud_backtest.create_backtest_result(db, obj_in=backtest_create)
@@ -261,4 +297,4 @@ def run_optimization_task(
     finally:
         db.close()
     
-    print("Optimization finished dispatching all tasks.")
+    print(f"Optimization {optimization_id} finished dispatching all tasks.")

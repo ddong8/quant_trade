@@ -42,8 +42,10 @@ export default {
     startStrategy(id) { return apiClient.post(`/strategies/${id}/start`); },
     stopStrategy(id) { return apiClient.post(`/strategies/${id}/stop`); },
     runBacktest(strategyId, params) { return apiClient.post(`/backtests/run/${strategyId}`, params); },
+    runOptimization(strategyId, params) { return apiClient.post(`/backtests/optimize/${strategyId}`, params); },
     getBacktestHistory(strategyId) { return apiClient.get(`/backtests/history/${strategyId}`); },
     getBacktestReport(backtestId) { return apiClient.get(`/backtests/${backtestId}`); },
+    getOptimizationResults(optimizationId) { return apiClient.get(`/backtests/optimization/${optimizationId}`); },
 
     // --- Login method using apiClient ---
     login(credentials) {

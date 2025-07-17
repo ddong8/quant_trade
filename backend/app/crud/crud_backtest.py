@@ -2,7 +2,7 @@
 from sqlalchemy.orm import Session
 from app.models.backtest import BacktestResult
 from app.schemas.backtest import BacktestResultCreate, BacktestResultUpdate
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, List
 
 def create_backtest_result(db: Session, *, obj_in: BacktestResultCreate) -> BacktestResult:
     db_obj = BacktestResult(
@@ -12,6 +12,9 @@ def create_backtest_result(db: Session, *, obj_in: BacktestResultCreate) -> Back
         start_dt=obj_in.start_dt,
         end_dt=obj_in.end_dt,
         status=obj_in.status,
+        commission_rate=obj_in.commission_rate,
+        slippage=obj_in.slippage,
+        optimization_id=obj_in.optimization_id,
     )
     db.add(db_obj)
     db.commit()
@@ -45,8 +48,15 @@ def get_backtest_results_by_strategy(db: Session, strategy_id: int, skip: int = 
             "id": result.id,
             "created_at": result.created_at,
             "status": result.status,
-            "summary": summary, # 返回完整的summary
+            "summary": summary,
             "sharpe_ratio": summary.get("sharpe_ratio"),
             "max_drawdown": summary.get("max_drawdown"),
+            "optimization_id": result.optimization_id,
         })
     return response_data
+
+def get_backtest_results_by_optimization_id(db: Session, optimization_id: str) -> List[BacktestResult]:
+    """
+    Fetches all backtest results associated with a specific optimization ID.
+    """
+    return db.query(BacktestResult).filter(BacktestResult.optimization_id == optimization_id).order_by(BacktestResult.created_at.asc()).all()
